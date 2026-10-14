@@ -54,7 +54,16 @@ jobs:
 
       - name: 单元测试
         working-directory: app
-        run: flutter test --no-pub || echo "（暂无 app 侧测试）"
+        run: |
+          # PowerShell 的 || 不会重置 $LASTEXITCODE：测试目录不存在时
+          # flutter 以 1 退出，echo 虽执行但步骤仍以 1 收尾 → 假红。
+          if (Test-Path test) {
+            flutter test --no-pub
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "（暂无 app 侧测试，跳过）"
+          }
+          exit 0
 
       - name: 构建 Windows（Release）
         working-directory: app
