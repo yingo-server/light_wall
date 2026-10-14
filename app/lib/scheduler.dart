@@ -10,7 +10,6 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/painting.dart';
 import 'package:flutter/widgets.dart';
 import 'package:lightwall_core/lightwall_core.dart';
 
@@ -327,7 +326,7 @@ class RenderScheduler {
         final f = File(settings.backgrounds[idx]);
         if (f.existsSync()) {
           final img = decodePng(f.readAsBytesSync());
-          return _fit(img, Win32.screenSize);
+          return _fit(img, Win32.screenSize());
         }
       } catch (_) {}
     }
@@ -336,10 +335,10 @@ class RenderScheduler {
     final bytes = _readAssetBytes(asset);
     if (bytes != null) {
       final img = decodePng(bytes);
-      return _fit(img, Win32.screenSize);
+      return _fit(img, Win32.screenSize());
     }
     // 兜底：程序生成一张中性灰墙
-    final size = Win32.screenSize;
+    final size = Win32.screenSize();
     final rgb = Uint8List(size.$1 * size.$2 * 3);
     for (var i = 0; i < size.$1 * size.$2; i++) {
       final n = valueNoise((i % size.$1) / 9.0, (i ~/ size.$1) / 9.0, 3);

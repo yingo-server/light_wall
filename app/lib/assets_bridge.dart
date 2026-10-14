@@ -10,7 +10,6 @@
 // 两处必须保持一致——panel 里要显示缩略图，所以路径字符串要完全相同。
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 

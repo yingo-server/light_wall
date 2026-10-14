@@ -84,8 +84,8 @@ class TrayHost {
         ),
       ]));
 
-      // 右键才弹菜单；左键由 _TrayListenerImpl 接管成"显示面板"
-      await trayManager.setIsRightClick(true);
+      // 注：tray_manager 0.5.x 已移除 setIsRightClick —— 右键弹菜单
+      // 是原生默认行为，左键事件走 _TrayListenerImpl 接管成"显示面板"。
 
       // 悬停提示（必须在 setIcon 之后调用）
       await trayManager.setToolTip('LightWall 光墙 · 壁纸每 3 分钟更新');

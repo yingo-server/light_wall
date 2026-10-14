@@ -5,9 +5,6 @@
 //   文字 —— 模板（含变量）、字体、位置、年代感
 //   底图 —— 内置三张 + 导入自己的图片
 //   设置 —— 位置、窗户朝向、开机自启、隐藏托盘
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lightwall_core/lightwall_core.dart';
@@ -262,7 +259,7 @@ class _PanelPageState extends State<PanelPage> {
       padding: const EdgeInsets.all(24),
       children: <Widget>[
         _card(
-          '文字模板',
+          _dirty ? '文字模板 · 未保存' : '文字模板',
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
@@ -760,6 +757,13 @@ class _FileSelectorShim {
     try {
       final channel = const MethodChannel('lightwall/file_picker');
       final res = await channel.invokeMethod<String>('pickPng');
+      return res;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+g>('pickPng');
       return res;
     } catch (_) {
       return null;

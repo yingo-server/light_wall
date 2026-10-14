@@ -3,7 +3,6 @@
 // 引擎（package:lightwall_core 的 template.dart）只提供通用能力，
 // 这里负责"这个产品该有哪些变量"。
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:lightwall_core/lightwall_core.dart';
 
@@ -150,7 +149,7 @@ class Variables {
 
       /// 当天进度 0~1（可传小时表示"到某点为止"）
       'day_progress': (args, ctx) {
-        final h = args.length > 1 ? _toDouble(args[1]) : 24.0;
+        final h = (args.length > 1 ? _toDouble(args[1]) : null) ?? 24.0;
         final passed =
             (ctx.now.hour + ctx.now.minute / 60.0) / (h <= 0 ? 24.0 : h);
         return passed.clamp(0.0, 1.0);

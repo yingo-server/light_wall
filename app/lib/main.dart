@@ -14,7 +14,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/gestures.dart'
+    show GestureBinding, PointerDeviceKind, PointerDownEvent, PointerUpEvent;
 import 'package:flutter/rendering.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -93,6 +94,7 @@ LightWall 光墙 —— Windows 物理光照壁纸引擎
 
     // 注：Dart 的 switch 不允许像 C 那样贯穿，必须逐 case 跳出，
     // 因此这里用「取值 → 分派」的形式，而不是 fall-through。
+    var i = 0;
     String? valueOf(String name) {
       if (i + 1 >= args.length) {
         errors.add('$name 缺少参数');
@@ -101,7 +103,7 @@ LightWall 光墙 —— Windows 物理光照壁纸引擎
       return args[++i];
     }
 
-    for (var i = 0; i < args.length; i++) {
+    for (; i < args.length; i++) {
       final a = args[i];
       switch (a) {
         case '--help':
@@ -353,28 +355,27 @@ Future<Uint8List?> _capturePng(GlobalKey boundary) async {
 /// CI 专用假设：导航栏没有 leading 项，4 个目的地均分整个高度。
 /// 若将来 PanelPage 加了 leading，这里需要改 `_kNavDestinations`。
 Future<bool> _selectNavRailTab(GlobalKey boundary, int index) async {
-  const int _kNavDestinations = 4;
+  const int navDestinations = 4;
   try {
     final ctx = boundary.currentContext;
-    if (ctx == null) return false;
+    if (ctx == null || ctx is! Element) return false;
     final rail = _findRailElement(ctx);
     if (rail == null) return false;
     final box = rail.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return false;
 
-    final step = box.size.height / _kNavDestinations;
+    final step = box.size.height / navDestinations;
     final local = Offset(box.size.width / 2, step * (index + 0.5));
     final global = box.localToGlobal(local);
 
     final gestures = GestureBinding.instance;
-    const kind = PointerDeviceKind.touch;
-    gestures.handlePointerEvent(const PointerDownEvent(
+    gestures.handlePointerEvent(PointerDownEvent(
       position: global,
-      kind: kind,
+      kind: PointerDeviceKind.touch,
     ));
-    gestures.handlePointerEvent(const PointerUpEvent(
+    gestures.handlePointerEvent(PointerUpEvent(
       position: global,
-      kind: kind,
+      kind: PointerDeviceKind.touch,
     ));
     return true;
   } catch (e) {
