@@ -233,8 +233,12 @@ RenderResult render({
     windowAz: spec.windowAz,
   );
 
-  // 5. 场景
-  final sceneCfg = spec.sceneCfg.build();
+  // 5. 场景：把 spec 上的窗格参数覆盖到场景配置
+  final sceneCfg = spec.sceneCfg.build().copyWith(
+        gridRows: spec.gridRows,
+        gridCols: spec.gridCols,
+        gridFrameRatio: spec.gridFrameRatio,
+      );
   final scene = Scene3D(
     sceneCfg,
     spec.windowAz,

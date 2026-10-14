@@ -874,7 +874,10 @@ class _TplParser {
         i = t2.tagEnd + 1;
         return _IfNode(branches, elseBody);
       }
-      // elseif → 继续下一轮
+      // elseif → 越过该标签继续下一轮。
+      // 必须推进 i，否则下一轮 _parseBody 会从同一个 {elseif ...} 开始，
+      // 立刻又遇到终止符 → 死循环。
+      i = term.tagEnd + 1;
       curContent = term.content;
       curContentStart = term.contentStart;
       curTagStart = term.tagStart;
@@ -1166,22 +1169,47 @@ String formatDateTime(DateTime d, String pattern) {
   var k = 0;
   final n = pattern.length;
   while (k < n) {
-    var matched = false;
-    for (final tok in _timeTokens) {
-      if (!pattern.startsWith(tok, k)) continue;
-      final after = k + tok.length;
-      if (after < n && pattern[after] == tok[tok.length - 1]) continue;
-      sb.write(_timeTokenValue(d, tok));
-      k = after;
-      matched = true;
-      break;
-    }
-    if (!matched) {
-      sb.write(pattern[k]);
+    final c = pattern[k];
+    if (!_isLetter(c)) {
+      sb.write(c);
       k++;
+      continue;
     }
+    // 吃掉整段同类字母，再判断它是否恰好是某个受支持的占位符。
+    //
+    // 为什么要"整段"而不是逐个尝试：`MMMM` 若逐个试，`MM` 在中途
+    // （只剩 "MM" 时）会被误判为合法 → 输出 "MM" + "10"。
+    // 整段判定后：段长 4，而只支持 1~2 位的 M → 未支持 → 原样输出。
+    var j = k;
+    while (j < n && pattern[j] == c) {
+      j++;
+    }
+    final run = pattern.substring(k, j);
+    final tok = _timeTokenOf(run);
+    if (tok == null) {
+      sb.write(run); // 未支持的写法（如 MMM / sss），原样输出
+    } else {
+      sb.write(_timeTokenValue(d, tok));
+    }
+    k = j;
   }
   return sb.toString();
+}
+
+bool _isLetter(String c) {
+  final u = c.codeUnitAt(0);
+  return (u >= 0x61 && u <= 0x7a) || (u >= 0x41 && u <= 0x5a);
+}
+
+/// 整段同类字母 [run] 是否恰好对应某个受支持的时间占位符。
+///
+/// 返回占位符名（'MM' / 'yyyy' …），未支持则返回 null。
+/// 'MM' → 'MM'；'MMMM' → null；'EEEE' → 'EEEE'。
+String? _timeTokenOf(String run) {
+  for (final tok in _timeTokens) {
+    if (run == tok) return tok;
+  }
+  return null;
 }
 
 String _timeTokenValue(DateTime d, String tok) {

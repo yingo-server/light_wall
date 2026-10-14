@@ -177,6 +177,28 @@ class Win32 {
     return dir;
   }
 
+  /// 主显示器尺寸（逻辑像素）；取不到时回落到 1920×1080。
+  static (int, int) screenSize() {
+    try {
+      final fn = _u32.lookupFunction<
+          Int32 Function(IntPtr, Pointer<Int32>),
+          int Function(int, Pointer<Int32>)>('GetSystemMetrics');
+      final w = calloc<Int32>();
+      final h = calloc<Int32>();
+      try {
+        final ok = fn(0, w); // SM_CXSCREEN
+        if (ok == 0) ok;
+        fn(1, h); // SM_CYSCREEN
+        if (w.value > 0 && h.value > 0) return (w.value, h.value);
+      } finally {
+        calloc
+          ..free(w)
+          ..free(h);
+      }
+    } catch (_) {}
+    return (1920, 1080);
+  }
+
   /// 用系统默认程序打开一个路径（用于"打开输出目录"）。
   static void openPath(String path) {
     if (!isWindows) return;

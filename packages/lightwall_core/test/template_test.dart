@@ -171,9 +171,12 @@ void main() {
       expect(engine.render('{if(true, "A", "B")}'), 'A');
       expect(engine.render('{if(false, "A", "B")}'), 'B');
       expect(engine.render('{if(zero, "A", "B")}'), 'B');
-      // 未选中的分支不求值：即使它含除零错误，也不影响结果
-      expect(engine.render('{if(true, 1 / 0, "B")}'), 'B');
-      expect(engine.render('{if(false, "A", "B")}'), 'B');
+      // 惰性求值的证明：错误只出现在**未被选中**的分支里，
+      // 因此整体照常求值成功；若引擎是急切求值，这里会抛错并保留原文。
+      expect(engine.render('{if(true, "A", 1 / 0)}'), 'A');
+      expect(engine.render('{if(false, 1 / 0, "B")}'), 'B');
+      // 被选中的分支自身出错 → 保留原文（引擎的通用容错约定）
+      expect(engine.render('{if(false, "A", 1 / 0)}'), '{if(false, "A", 1 / 0)}');
     });
 
     test('参数可以是字符串、数字、嵌套函数、表达式', () {
