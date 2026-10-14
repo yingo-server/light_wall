@@ -1690,6 +1690,13 @@ Object? _eval(TExpr e, TemplateContext ctx) {
 }
 
 Object? _evalCall(TCall e, TemplateContext ctx) {
+  // 惰性求值：if(cond, a, b) 只求值被选中的分支，
+  // 未选中的分支即使含错误（如除零、未知函数）也不会影响结果。
+  if (e.name == 'if' && e.args.length == 3) {
+    final c = _eval(e.args[0], ctx);
+    return _eval(_truthy(c) ? e.args[1] : e.args[2], ctx);
+  }
+
   final user = ctx.functions[e.name];
   if (user == null) {
     // `defined(name)`：参数取变量名而非值，需在求值前拦截。

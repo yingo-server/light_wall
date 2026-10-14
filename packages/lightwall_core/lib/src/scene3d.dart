@@ -404,7 +404,10 @@ class Scene3D {
   ///   · 南北向窗户 → 垂直墙接不到直射，改为正对窗户的对面墙
   static double chooseViewWall(double windowAz) {
     final w = normAz(windowAz);
-    final dev = azDelta(w, 90.0); // 与东西方向的偏离
+    // 与"东西方向"的偏离（取离东/西更近的那个）
+    final devE = azDelta(w, 90.0);
+    final devW = azDelta(w, 270.0);
+    final dev = devE < devW ? devE : devW;
     if (dev > 45.0) return normAz(w + 180.0);
     final a = normAz(w + 90.0);
     final b = normAz(w - 90.0);

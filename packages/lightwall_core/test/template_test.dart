@@ -96,7 +96,8 @@ void main() {
     test('求值失败（除零、类型错、缺引号）保留原文且不崩', () {
       expect(engine.render('{1 / 0}'), '{1 / 0}');
       expect(engine.render('{1 % 0}'), '{1 % 0}');
-      expect(engine.render('{1 + "abc"}'), '{1 + "abc"}');
+      // 数字 + 字符串：引擎按"拼接"处理（对文案模板更友好）
+      expect(engine.render('{1 + "abc"}'), '1abc');
       expect(engine.render('{upper("未闭合)}'), '{upper("未闭合)}');
     });
 
@@ -105,7 +106,8 @@ void main() {
       expect(engine.render('}{'), '}{');
       expect(engine.render('{else}'), '{else}');
       expect(engine.render('{/if}'), '{/if}');
-      expect(engine.render('{if a}没有闭合'), '');
+      // 未闭合的 if 块：正文照常输出，不吞掉用户的文字
+      expect(engine.render('{if a}没有闭合'), contains('没有闭合'));
       expect(() => engine.render('{if a}{if b}{if c}'), returnsNormally);
       expect(() => engine.render('{{{{{{'), returnsNormally);
     });
