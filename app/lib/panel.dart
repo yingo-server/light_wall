@@ -301,6 +301,7 @@ class _PanelPageState extends State<PanelPage> {
                   'FangSong',
                   'LiSu',
                 ],
+                itemLabel: (e) => e,
                 onChanged: (v) => setState(() {
                   s.fontFamily = v ?? s.fontFamily;
                   s.save();
@@ -757,13 +758,6 @@ class _FileSelectorShim {
     try {
       final channel = const MethodChannel('lightwall/file_picker');
       final res = await channel.invokeMethod<String>('pickPng');
-      return res;
-    } catch (_) {
-      return null;
-    }
-  }
-}
-g>('pickPng');
       return res;
     } catch (_) {
       return null;
