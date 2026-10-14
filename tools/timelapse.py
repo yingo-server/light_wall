@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--lat-spread", action="store_true",
                     help="按月份铺开（用 12 个月的代表日，展示季节变化）")
     ap.add_argument("--timeout", type=int, default=600, help="单帧超时（秒）")
+    ap.add_argument("--jobs", type=int, default=1, help="并行渲染进程数")
     args = ap.parse_args()
 
     w, h = (int(v) for v in args.size.lower().split("x"))
@@ -53,7 +54,11 @@ def main():
 
     timeline = []
     fails = 0
-    for idx, t in enumerate(points):
+    jobs = max(1, args.jobs)
+    from concurrent.futures import ThreadPoolExecutor
+
+    def render_one(item):
+        idx, t = item
         out = os.path.join(frames_dir, f"f{idx:04d}.png")
         cmd = [
             args.engine,
@@ -78,21 +83,32 @@ def main():
             info = json.loads(r.stdout) if r.stdout.strip() else {}
         except Exception as e:  # noqa: BLE001
             info = {"error": str(e)}
-        if "error" in info or not os.path.exists(out):
-            fails += 1
-            print(f"[{idx + 1}/{len(points)}] {t:%H:%M} 失败: {info.get('error', '未知')}")
-        else:
+        ok = ("error" not in info) and os.path.exists(out)
+        if ok:
             st = info.get("stats", {})
             print(f"[{idx + 1}/{len(points)}] {t:%H:%M} alt={info.get('sun_alt')} "
                   f"beam={info.get('beam')} vis={st.get('visible_ratio')} "
                   f"{info.get('ms')}ms")
-        timeline.append({
+        else:
+            print(f"[{idx + 1}/{len(points)}] {t:%H:%M} 失败: "
+                  f"{info.get('error', '未知')}")
+        entry = {
             "index": idx,
             "time": t.strftime("%Y-%m-%dT%H:%M:00+08:00"),
             "file": os.path.basename(out),
             **{k: info.get(k) for k in ("sun_alt", "sun_az", "beam", "source", "ms")},
             "visible_ratio": (info.get("stats") or {}).get("visible_ratio"),
-        })
+        }
+        return entry, ok
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for entry, ok in pool.map(render_one, list(enumerate(points))):
+            timeline.append(entry)
+            done += 1
+            if not ok:
+                fails += 1
+    timeline.sort(key=lambda e: e["index"])
 
     with open(os.path.join(args.out_dir, "timeline.json"), "w", encoding="utf-8") as f:
         json.dump({"frames": timeline, "text": args.text}, f,

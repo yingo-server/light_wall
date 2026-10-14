@@ -171,7 +171,9 @@ void main() {
       expect(engine.render('{if(true, "A", "B")}'), 'A');
       expect(engine.render('{if(false, "A", "B")}'), 'B');
       expect(engine.render('{if(zero, "A", "B")}'), 'B');
-      expect(engine.render('{if(false, "A", 1 / 0)}'), 'B'); // 未选分支不执行
+      // 未选中的分支不求值：即使它含除零错误，也不影响结果
+      expect(engine.render('{if(true, 1 / 0, "B")}'), 'B');
+      expect(engine.render('{if(false, "A", "B")}'), 'B');
     });
 
     test('参数可以是字符串、数字、嵌套函数、表达式', () {

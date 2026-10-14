@@ -1690,13 +1690,6 @@ Object? _eval(TExpr e, TemplateContext ctx) {
 }
 
 Object? _evalCall(TCall e, TemplateContext ctx) {
-  // 惰性求值：if(cond, a, b) 只求值被选中的分支，
-  // 未选中的分支即使含错误（如除零、未知函数）也不会影响结果。
-  if (e.name == 'if' && e.args.length == 3) {
-    final c = _eval(e.args[0], ctx);
-    return _eval(_truthy(c) ? e.args[1] : e.args[2], ctx);
-  }
-
   final user = ctx.functions[e.name];
   if (user == null) {
     // `defined(name)`：参数取变量名而非值，需在求值前拦截。
@@ -1709,11 +1702,13 @@ Object? _evalCall(TCall e, TemplateContext ctx) {
       }
       return !_isUndef(_eval(a0, ctx));
     }
-    // `if(cond, a, b)`：惰性求值，未选中的分支不执行。
+    // `if(cond, a[, b])`：惰性求值 —— 只求值被选中的分支。
+    // 未选中的分支即使含错误（除零、未知函数）也不会影响结果。
     if (e.name == 'if') {
       _arity(e.args, 2, 3, 'if');
-      if (_truthy(_eval(e.args[0], ctx))) return _eval(e.args[1], ctx);
-      return e.args.length >= 3 ? _eval(e.args[2], ctx) : null;
+      final chosen = _truthy(_eval(e.args[0], ctx)) ? 1 : 2;
+      if (chosen < e.args.length) return _eval(e.args[chosen], ctx);
+      return null;
     }
   }
   final fn = user ?? _builtinFunctions[e.name];
