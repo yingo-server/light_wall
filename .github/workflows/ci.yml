@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md']
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: '延时帧数（每天均分）'
+        default: '60'
+        required: false
+      size:
+        description: '帧尺寸 宽x高'
+        default: '960x540'
+        required: false
+      date:
+        description: '日期 YYYY-MM-DD'
+        default: '2025-12-21'
+        required: false
+      window:
+        description: '窗户朝向 east/west/south/north'
+        default: 'east'
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CORE: packages/lightwall_core
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  # ══════════════════════════════════════════════════════════════
+  # ① 内核：静态检查 + 单元测试 + AOT 编译 + 全天延时出图 + 视频
+  #    全部在 CI 上跑（本机性能有限，重活都交给这里）
+  # ══════════════════════════════════════════════════════════════
+  core:
+    name: 内核测试与全天延时
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: 版本信息
+        run: dart --version
+
+      - name: 拉取依赖
+        working-directory: ${{ env.CORE }}
+        run: dart pub get
+
+      - name: 静态检查
+        working-directory: ${{ env.CORE }}
+        run: dart analyze
+
+      - name: 单元测试
+        working-directory: ${{ env.CORE }}
+        run: dart test -r expanded
+
+      - name: AOT 编译命令行渲染器
+        working-directory: ${{ env.CORE }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          dart compile exe bin/render.dart -o "$GITHUB_WORKSPACE/dist/render"
+          "$GITHUB_WORKSPACE/dist/render" --help | head -5
+
+      - name: 安装 ffmpeg 与中文字体
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk
+          fc-list :lang=zh | head -3
+
+      - name: 生成文字蒙版（朝闻道）
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pillow
+          SIZE="${{ github.event.inputs.size || '960x540' }}"
+          W="${SIZE%x*}"; H="${SIZE#*x}"
+          echo "蒙版尺寸 $W x $H"
+          python3 tools/make_text_mask.py --text "朝闻道" --out dist/mask.png \
+            --width "$W" --height "$H" --font-ratio 0.18 --ssaa 2
+
+      - name: 全天延时渲染（${{ github.event.inputs.frames || '60' }} 帧）
+        run: |
+          python3 tools/timelapse.py \
+            --engine dist/render \
+            --bg assets/backgrounds/microcement.png \
+            --mask dist/mask.png \
+            --out-dir dist/timelapse \
+            --frames ${{ github.event.inputs.frames || '60' }} \
+            --size ${{ github.event.inputs.size || '960x540' }} \
+            --date ${{ github.event.inputs.date || '2025-12-21' }} \
+            --window ${{ github.event.inputs.window || 'east' }} \
+            --text "朝闻道"
+
+      - name: 合成视频（1 帧 = 1 秒）
+        run: |
+          ffmpeg -y -framerate 1 -i dist/timelapse/frames/f%04d.png \
+            -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+            -c:v libx264 -pix_fmt yuv420p -crf 20 -r 30 \
+            -movflags +faststart dist/timelapse/lightwall_day.mp4
+          ffprobe -v error -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 dist/timelapse/lightwall_day.mp4
+          ls -la dist/timelapse/
+
+      - name: 关键帧拼图（便于快速审阅）
+        run: |
+          python3 - <<'PY'
+          import glob, os
+          from PIL import Image
+          files = sorted(glob.glob("dist/timelapse/frames/f*.png"))
+          pick = files[::max(1, len(files)//12)][:12]
+          if pick:
+              ims = [Image.open(p).convert("RGB") for p in pick]
+              tw = 320
+              ims = [im.resize((tw, int(im.height*tw/im.width))) for im in ims]
+              cols, rows = 4, 3
+              ch = ims[0].height
+              canvas = Image.new("RGB", (cols*tw, rows*ch), (12,12,14))
+              for i, im in enumerate(ims[:cols*rows]):
+                  r, c = divmod(i, cols)
+                  canvas.paste(im, (c*tw, r*ch))
+              canvas.save("dist/timelapse/contact_sheet.png")
+              print("contact sheet:", canvas.size, "from", len(pick), "frames")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelapse-video
+          path: |
+            dist/timelapse/lightwall_day.mp4
+            dist/timelapse/contact_sheet.png
+            dist/timelapse/timeline.json
+            dist/timelapse/timeline.tsv
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timelapse-frames
+          path: dist/timelapse/frames/
+          retention-days: 14
+
+      - name: 汇总到任务页
+        if: always()
+        run: |
+          {
+            echo "## 内核与延时构建"
+            echo ""
+            echo "- 帧数：${{ github.event.inputs.frames || '60' }}"
+            echo "- 尺寸：${{ github.event.inputs.size || '960x540' }}"
+            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }}"
+            echo "- 窗户：${{ github.event.inputs.window || 'east' }}"
+            echo ""
+            echo '```'
+            tail -25 dist/timelapse/timeline.tsv 2>/dev/null || echo "无时间线"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

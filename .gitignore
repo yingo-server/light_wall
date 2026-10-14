@@ -1,0 +1,18 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+build/
+dist/
+*.dill
+*.exe
+
+# 本地产物
+output/
+*.log
+*.mp4
+
+# 编辑器
+.idea/
+.vscode/
+*.iml
+.DS_Store
