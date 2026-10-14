@@ -44,7 +44,8 @@ double valueNoise(double x, double y, int seed) {
 }
 
 /// 分形叠加噪声（多倍频）。
-double fbm(double x, double y, int seed, {int octaves = 4, double lac = 2.0, double gain = 0.5}) {
+double fbm(double x, double y, int seed,
+    {int octaves = 4, double lac = 2.0, double gain = 0.5}) {
   var amp = 1.0;
   var freq = 1.0;
   var sum = 0.0;
@@ -294,13 +295,17 @@ Float32List resizeRgb(Float32List src, int sw, int sh, int dw, int dh) {
 /// 线性光 → sRGB 传输函数。
 double linearToSrgb(double c) {
   final v = c < 0 ? 0.0 : c;
-  return v <= 0.0031308 ? v * 12.92 : 1.055 * math.pow(v, 1 / 2.4).toDouble() - 0.055;
+  return v <= 0.0031308
+      ? v * 12.92
+      : 1.055 * math.pow(v, 1 / 2.4).toDouble() - 0.055;
 }
 
 /// sRGB → 线性光。
 double srgbToLinear(double c) {
   final v = c < 0 ? 0.0 : (c > 1 ? 1.0 : c);
-  return v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+  return v <= 0.04045
+      ? v / 12.92
+      : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
 }
 
 /// 构建 sRGB→线性 查找表（256 项）。

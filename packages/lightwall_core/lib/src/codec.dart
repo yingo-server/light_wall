@@ -43,8 +43,7 @@ Uint8List encodePng(Uint8List rgb, int width, int height) {
     raw.setRange(p, p + width * 3, rgb, rowStart);
     p += width * 3;
   }
-  final idat = Uint8List.fromList(
-      ZLibCodec(level: 6).encode(raw));
+  final idat = Uint8List.fromList(ZLibCodec(level: 6).encode(raw));
 
   final out = BytesBuilder();
   out.add(const <int>[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -103,8 +102,10 @@ Uint8List encodePng(Uint8List rgb, int width, int height) {
     if (dataEnd > bytes.length) break;
     switch (type) {
       case 'IHDR':
-        width = ByteData.sublistView(bytes, dataStart, dataStart + 4).getUint32(0);
-        height = ByteData.sublistView(bytes, dataStart + 4, dataStart + 8).getUint32(0);
+        width =
+            ByteData.sublistView(bytes, dataStart, dataStart + 4).getUint32(0);
+        height = ByteData.sublistView(bytes, dataStart + 4, dataStart + 8)
+            .getUint32(0);
         bitDepth = bytes[dataStart + 8];
         colorType = bytes[dataStart + 9];
         break;

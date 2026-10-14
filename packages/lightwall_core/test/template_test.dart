@@ -114,9 +114,20 @@ void main() {
 
     test('render 对各种畸形输入都不抛异常', () {
       final weird = <String>[
-        '{|}', '{a|}', '{a|:|:}', '{fn(,)}', '{fn((((}',
-        '{1 + + 1}', '{if} {/if}', '{}', '{ }', '{{}}',
-        '{if 1}{elseif}{else}{/if}', '{a b c}', '\\', '{',
+        '{|}',
+        '{a|}',
+        '{a|:|:}',
+        '{fn(,)}',
+        '{fn((((}',
+        '{1 + + 1}',
+        '{if} {/if}',
+        '{}',
+        '{ }',
+        '{{}}',
+        '{if 1}{elseif}{else}{/if}',
+        '{a b c}',
+        '\\',
+        '{',
       ];
       for (final t in weird) {
         expect(() => engine.render(t), returnsNormally, reason: t);
@@ -176,7 +187,8 @@ void main() {
       expect(engine.render('{if(true, "A", 1 / 0)}'), 'A');
       expect(engine.render('{if(false, 1 / 0, "B")}'), 'B');
       // 被选中的分支自身出错 → 保留原文（引擎的通用容错约定）
-      expect(engine.render('{if(false, "A", 1 / 0)}'), '{if(false, "A", 1 / 0)}');
+      expect(
+          engine.render('{if(false, "A", 1 / 0)}'), '{if(false, "A", 1 / 0)}');
     });
 
     test('参数可以是字符串、数字、嵌套函数、表达式', () {
@@ -244,8 +256,10 @@ void main() {
       expect(engine.render('{blankStr|default:"--"}'), '--');
       expect(engine.render('{nil|default:"--"}'), '--');
       expect(engine.render('{city|default:"--"}'), '上海');
-      expect(engine.render('{nope|default:fallback}'
-          .replaceFirst('fallback', 'city')), '上海');
+      expect(
+          engine.render(
+              '{nope|default:fallback}'.replaceFirst('fallback', 'city')),
+          '上海');
     });
 
     test('过滤器链', () {
@@ -270,7 +284,8 @@ void main() {
     });
 
     test('elseif 链', () {
-      const t = '{if temp > 30}热{elseif temp > 20}舒适{elseif temp > 10}凉{else}冷{/if}';
+      const t =
+          '{if temp > 30}热{elseif temp > 20}舒适{elseif temp > 10}凉{else}冷{/if}';
       expect(engine.render(t), '舒适');
       expect(
         TemplateEngine(TemplateContext(now: fixedNow, values: {'temp': 35}))
@@ -304,7 +319,8 @@ void main() {
     });
 
     test('嵌套条件块走 else 分支', () {
-      const t = '{if a > 100}A{else}{if rain}R{else}{if zero}Z{else}END{/if}{/if}{/if}';
+      const t =
+          '{if a > 100}A{else}{if rain}R{else}{if zero}Z{else}END{/if}{/if}{/if}';
       expect(engine.render(t), 'END');
     });
 
@@ -507,12 +523,14 @@ void main() {
     });
 
     test('条件块嵌套 5 层', () {
-      const t = '{if a}1{if b}2{if n > 5}3{if a < 2}4{if n == 7}5{/if}{/if}{/if}{/if}{/if}';
+      const t =
+          '{if a}1{if b}2{if n > 5}3{if a < 2}4{if n == 7}5{/if}{/if}{/if}{/if}{/if}';
       expect(engine.render(t), '12345');
     });
 
     test('混合嵌套：条件里套函数、函数里套条件变量', () {
-      const t = '{if len(city) > 1}长度{len(city)}{if upper(city) == "上海"}OK{/if}{/if}';
+      const t =
+          '{if len(city) > 1}长度{len(city)}{if upper(city) == "上海"}OK{/if}{/if}';
       expect(engine.render(t), '长度2OK');
     });
 
@@ -591,13 +609,36 @@ void main() {
     test('describeBuiltins 覆盖全部内置函数与过滤器', () {
       final d = describeBuiltins();
       const fns = <String>[
-        'min', 'max', 'round', 'floor', 'ceil', 'abs', 'upper', 'lower',
-        'trim', 'pad', 'repeat', 'len', 'empty', 'defined', 'random', 'cn',
-        'if', 'format_time',
+        'min',
+        'max',
+        'round',
+        'floor',
+        'ceil',
+        'abs',
+        'upper',
+        'lower',
+        'trim',
+        'pad',
+        'repeat',
+        'len',
+        'empty',
+        'defined',
+        'random',
+        'cn',
+        'if',
+        'format_time',
       ];
       const filters = <String>[
-        'pad2', 'padN', 'upper', 'lower', 'trim', 'cn', 'percent', 'sign',
-        'default', 'round0',
+        'pad2',
+        'padN',
+        'upper',
+        'lower',
+        'trim',
+        'cn',
+        'percent',
+        'sign',
+        'default',
+        'round0',
       ];
       for (final f in fns) {
         expect(d, contains(f), reason: '函数说明缺失：$f');

@@ -73,7 +73,8 @@ MaterialMaps extractMaterial(Float32List rClean, int w, int h) {
     final r = rClean[i * 3], g = rClean[i * 3 + 1], b = rClean[i * 3 + 2];
     shading[i] = math.min(r, math.min(g, b));
   }
-  final shadeBlur = blurGray(shading, w, h, math.max(4.0, math.min(w, h) * 0.03));
+  final shadeBlur =
+      blurGray(shading, w, h, math.max(4.0, math.min(w, h) * 0.03));
   final albedo = Float32List(n * 3);
   var sum = 0.0;
   for (var i = 0; i < n; i++) {
@@ -103,7 +104,8 @@ MaterialMaps extractMaterial(Float32List rClean, int w, int h) {
   for (var i = 0; i < n; i++) {
     final v = math.max(localSq[i] - localMean[i] * localMean[i], 0.0);
     final std = math.sqrt(v);
-    roughness[i] = ((std / math.max(localMean[i], 1e-4)) * 2.0).clamp(0.10, 0.90);
+    roughness[i] =
+        ((std / math.max(localMean[i], 1e-4)) * 2.0).clamp(0.10, 0.90);
   }
 
   // ── 4. Normal（亮度梯度）──

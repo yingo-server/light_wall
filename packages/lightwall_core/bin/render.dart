@@ -17,10 +17,20 @@ import 'package:lightwall_core/lightwall_core.dart';
 
 /// 罗盘朝向名 → 方位角。
 const Map<String, double> kWindowAz = <String, double>{
-  'n': 0, 'ne': 45, 'e': 90, 'se': 135,
-  's': 180, 'sw': 225, 'w': 270, 'nw': 315,
-  'north': 0, 'east': 90, 'south': 180, 'west': 270,
-  'left': 270, 'right': 90,
+  'n': 0,
+  'ne': 45,
+  'e': 90,
+  'se': 135,
+  's': 180,
+  'sw': 225,
+  'w': 270,
+  'nw': 315,
+  'north': 0,
+  'east': 90,
+  'south': 180,
+  'west': 270,
+  'left': 270,
+  'right': 90,
 };
 
 void main(List<String> argv) {
@@ -57,9 +67,8 @@ void main(List<String> argv) {
   final windowAz = _windowAzFrom(args['window'] ?? 'right');
   final lat = double.tryParse(args['lat'] ?? '') ?? 39.9042;
   final lon = double.tryParse(args['lon'] ?? '') ?? 116.4074;
-  final time = args['time'] != null
-      ? DateTime.parse(args['time']!)
-      : DateTime.now();
+  final time =
+      args['time'] != null ? DateTime.parse(args['time']!) : DateTime.now();
 
   Float32List? textAlpha;
   final maskPath = args['text-alpha'];
@@ -128,8 +137,8 @@ void main(List<String> argv) {
   sw.stop();
 
   final outPath = args['out'] ?? 'out.png';
-  File(outPath).writeAsBytesSync(
-      encodePng(result.rgb, result.width, result.height));
+  File(outPath)
+      .writeAsBytesSync(encodePng(result.rgb, result.width, result.height));
 
   final summary = <String, Object?>{
     'out': outPath,
@@ -141,8 +150,8 @@ void main(List<String> argv) {
     'beam': double.parse(result.light.beamIrradiance.toStringAsFixed(4)),
     'diffuse': double.parse(result.light.diffuseIrradiance.toStringAsFixed(4)),
     'window_az': windowAz,
-    'stats': result.albedoStats.map(
-        (k, v) => MapEntry(k, double.parse(v.toStringAsFixed(4)))),
+    'stats': result.albedoStats
+        .map((k, v) => MapEntry(k, double.parse(v.toStringAsFixed(4)))),
   };
   stdout.writeln(const JsonEncoder.withIndent('  ').convert(summary));
 }
@@ -174,8 +183,8 @@ Uint8List _resizeRgb(Uint8List src, int sw, int sh, int dw, int dh) {
         final b = src[(y0 * sw + x1) * 3 + c];
         final cc = src[(y1 * sw + x0) * 3 + c];
         final d = src[(y1 * sw + x1) * 3 + c];
-        final v = (a * (1 - wx) + b * wx) * (1 - wy) +
-            (cc * (1 - wx) + d * wx) * wy;
+        final v =
+            (a * (1 - wx) + b * wx) * (1 - wy) + (cc * (1 - wx) + d * wx) * wy;
         out[(y * dw + x) * 3 + c] = v.round().clamp(0, 255);
       }
     }

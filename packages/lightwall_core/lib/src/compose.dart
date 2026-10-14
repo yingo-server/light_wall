@@ -86,10 +86,13 @@ Float32List synthesize({
   if (look.patchBounceStrength > 0 && patchMask != null) {
     final src = Float32List(n);
     for (var i = 0; i < n; i++) {
-      src[i] = patchMask[i] * (d[i * 3] + d[i * 3 + 1] + d[i * 3 + 2]) / 3.0 * 0.5;
+      src[i] =
+          patchMask[i] * (d[i * 3] + d[i * 3 + 1] + d[i * 3 + 2]) / 3.0 * 0.5;
     }
-    final small = blurGray(src, width, height, math.max(3.0, math.min(width, height) * 0.03));
-    final large = blurGray(src, width, height, math.max(8.0, math.min(width, height) * 0.08));
+    final small = blurGray(
+        src, width, height, math.max(3.0, math.min(width, height) * 0.03));
+    final large = blurGray(
+        src, width, height, math.max(8.0, math.min(width, height) * 0.08));
     final k = look.patchBounceStrength;
     for (var i = 0; i < n; i++) {
       final v = (small[i] * 0.6 + large[i] * 0.4) * k;
@@ -137,8 +140,7 @@ Float32List synthesize({
   }
   if ((look.saturation - 1.0).abs() > 1e-4) {
     for (var i = 0; i < n; i++) {
-      final gray =
-          (out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2]) / 3.0;
+      final gray = (out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2]) / 3.0;
       for (var c = 0; c < 3; c++) {
         out[i * 3 + c] = gray + (out[i * 3 + c] - gray) * look.saturation;
       }

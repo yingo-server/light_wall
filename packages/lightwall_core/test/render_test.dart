@@ -204,10 +204,10 @@ void main() {
         return s / a.length;
       }
 
-      final clean = generateAgedAlpha(alpha, w, h,
-          params: AgedParams.clean, seed: 7);
-      final aged = generateAgedAlpha(alpha, w, h,
-          params: AgedParams.aged, seed: 7);
+      final clean =
+          generateAgedAlpha(alpha, w, h, params: AgedParams.clean, seed: 7);
+      final aged =
+          generateAgedAlpha(alpha, w, h, params: AgedParams.aged, seed: 7);
       expect(mean(aged), lessThan(mean(clean)));
     });
   });

@@ -13,13 +13,15 @@ void main() {
     });
 
     test('上午 9 点太阳在东偏南方向', () {
-      final s = sunPosition(39.9042, 116.4074, DateTime.parse('2025-06-21T09:00:00+08:00'));
+      final s = sunPosition(
+          39.9042, 116.4074, DateTime.parse('2025-06-21T09:00:00+08:00'));
       expect(s.altitude, closeTo(45.8, 0.3));
       expect(s.azimuth, closeTo(96.7, 0.3));
     });
 
     test('夜间高度角为负', () {
-      final s = sunPosition(39.9042, 116.4074, DateTime.parse('2025-06-21T02:00:00+08:00'));
+      final s = sunPosition(
+          39.9042, 116.4074, DateTime.parse('2025-06-21T02:00:00+08:00'));
       expect(s.altitude, lessThan(0));
     });
   });
@@ -27,7 +29,8 @@ void main() {
   group('大气与辐照度', () {
     test('分波长透过率：正午偏白，低角偏红', () {
       final noon = solarIrradianceRgb(60.0);
-      expect((noon[0] - noon[2]).abs(), lessThan(0.20)); // 通道接近（高空仍有 0.16 的瑞利偏色）
+      expect(
+          (noon[0] - noon[2]).abs(), lessThan(0.20)); // 通道接近（高空仍有 0.16 的瑞利偏色）
       final low = solarIrradianceRgb(3.0);
       expect(low[0], greaterThan(low[2])); // 红 > 蓝
     });

@@ -85,7 +85,8 @@ RetinexResult decomposeAlbedo(Float32List wallLin, int w, int h,
   final r = Float32List(n * 3);
   var targetMean = 0.0;
   for (var i = 0; i < n; i++) {
-    targetMean += (wallLin[i * 3] + wallLin[i * 3 + 1] + wallLin[i * 3 + 2]) / 3.0;
+    targetMean +=
+        (wallLin[i * 3] + wallLin[i * 3 + 1] + wallLin[i * 3 + 2]) / 3.0;
   }
   targetMean /= math.max(1, n);
   var curMean = 0.0;
@@ -144,8 +145,8 @@ RetinexResult decomposeAlbedo(Float32List wallLin, int w, int h,
   );
 }
 
-void _inpaint(Float32List rgb, int n, int w, int h, Uint8List mask,
-    double radius) {
+void _inpaint(
+    Float32List rgb, int n, int w, int h, Uint8List mask, double radius) {
   // 逐通道：用低频版本替换被标记的像素
   for (var c = 0; c < 3; c++) {
     final ch = Float32List(n);

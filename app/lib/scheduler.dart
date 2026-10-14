@@ -113,7 +113,8 @@ Future<Float32List> rasterizeText({
 
   // 1x 光栅化到 alpha 图
   final image = await picture.toImage(width, height);
-  final bytes = await image.toByteData(format: ui.ImageByteFormat.rawStraightRgba);
+  final bytes =
+      await image.toByteData(format: ui.ImageByteFormat.rawStraightRgba);
   image.dispose();
   final rgba = bytes!.buffer.asUint8List();
   final alpha = Float32List(width * height);
@@ -150,7 +151,8 @@ class RenderScheduler {
 
   Timer? _timer;
   final ValueNotifier<bool> busy = ValueNotifier<bool>(false);
-  final ValueNotifier<RenderOutcome?> last = ValueNotifier<RenderOutcome?>(null);
+  final ValueNotifier<RenderOutcome?> last =
+      ValueNotifier<RenderOutcome?>(null);
   final ValueNotifier<DateTime?> nextRun = ValueNotifier<DateTime?>(null);
   final ValueNotifier<String> status = ValueNotifier<String>('待命');
 
@@ -319,7 +321,8 @@ class RenderScheduler {
     // 用户导入的底图（轮换）
     if (settings.backgrounds.isNotEmpty) {
       final idx = settings.backgroundCursor % settings.backgrounds.length;
-      settings.backgroundCursor = (settings.backgroundCursor + 1) % settings.backgrounds.length;
+      settings.backgroundCursor =
+          (settings.backgroundCursor + 1) % settings.backgrounds.length;
       try {
         final f = File(settings.backgrounds[idx]);
         if (f.existsSync()) {
@@ -328,8 +331,8 @@ class RenderScheduler {
         }
       } catch (_) {}
     }
-    final asset = kBuiltinBackgrounds[
-        settings.builtinIndex % kBuiltinBackgrounds.length];
+    final asset =
+        kBuiltinBackgrounds[settings.builtinIndex % kBuiltinBackgrounds.length];
     final bytes = _readAssetBytes(asset);
     if (bytes != null) {
       final img = decodePng(bytes);
@@ -351,7 +354,8 @@ class RenderScheduler {
   ({Uint8List rgb, int width, int height}) _fit(
       ({Uint8List rgb, int width, int height}) img, (int, int) screen) {
     if (img.width == screen.$1 && img.height == screen.$2) return img;
-    final scaled = resizeRgbBytes(img.rgb, img.width, img.height, screen.$1, screen.$2);
+    final scaled =
+        resizeRgbBytes(img.rgb, img.width, img.height, screen.$1, screen.$2);
     return (rgb: scaled, width: screen.$1, height: screen.$2);
   }
 
@@ -402,9 +406,11 @@ Future<_RawRenderResult> _renderInIsolate(RenderJob job) async {
   final png = encodePng(result.rgb, result.width, result.height);
   try {
     File(job.outBmpPath).writeAsBytesSync(
-        encodeBmp(result.rgb, result.width, result.height), flush: true);
+        encodeBmp(result.rgb, result.width, result.height),
+        flush: true);
   } catch (e) {
-    return _RawRenderResult(false, '写 BMP 失败: $e', '', 0, 0, 0, 0, Uint8List(0));
+    return _RawRenderResult(
+        false, '写 BMP 失败: $e', '', 0, 0, 0, 0, Uint8List(0));
   }
   try {
     File(job.outPngPath).writeAsBytesSync(png, flush: true);
@@ -455,8 +461,8 @@ Uint8List resizeRgbBytes(Uint8List src, int sw, int sh, int dw, int dh) {
         final b = src[(y0 * sw + x1) * 3 + c];
         final cc = src[(y1 * sw + x0) * 3 + c];
         final d = src[(y1 * sw + x1) * 3 + c];
-        final v = (a * (1 - wx) + b * wx) * (1 - wy) +
-            (cc * (1 - wx) + d * wx) * wy;
+        final v =
+            (a * (1 - wx) + b * wx) * (1 - wy) + (cc * (1 - wx) + d * wx) * wy;
         out[(y * dw + x) * 3 + c] = v.round().clamp(0, 255);
       }
     }

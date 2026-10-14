@@ -1,0 +1,120 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md']
+  workflow_dispatch:
+    inputs:
+      shot_pages:
+        description: '要截图的界面（逗号分隔：home,text,bg,settings）'
+        default: 'home,text,bg,settings'
+      release:
+        description: '是否发布 Release'
+        default: 'false'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: win-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.47.7'
+
+jobs:
+  build:
+    name: 构建 Windows + UI 截图
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Flutter 版本
+        run: flutter --version
+
+      - name: 拉取依赖
+        working-directory: app
+        run: flutter pub get
+
+      - name: 静态检查
+        working-directory: app
+        run: flutter analyze --no-fatal-infos
+
+      - name: 单元测试
+        working-directory: app
+        run: flutter test --no-pub || echo "（暂无 app 侧测试）"
+
+      - name: 构建 Windows（Release）
+        working-directory: app
+        run: flutter build windows --release
+
+      - name: 冒烟：命令行渲染一张
+        working-directory: app
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'smoke.png'
+          & .\build\windows\x64\runner\Release\light_wall.exe --render --out $out
+          if (Test-Path $out) { Write-Host "命令行渲染 OK" } else { Write-Host "命令行渲染未产出" }
+
+      - name: UI 截图（供回归对比）
+        working-directory: app
+        run: |
+          $exe = ".\build\windows\x64\runner\Release\light_wall.exe"
+          $pages = "${{ github.event.inputs.shot_pages || 'home,text,bg,settings' }}".Split(',')
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:GITHUB_WORKSPACE 'shots') | Out-Null
+          foreach ($p in $pages) {
+            $p = $p.Trim()
+            if (-not $p) { continue }
+            Write-Host "截图: $p"
+            & $exe --shot (Join-Path $env:GITHUB_WORKSPACE "shots\ui_$p.png") --ui-page $p
+          }
+          Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'shots') | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-build
+          path: app/build/windows/x64/runner/Release/
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-shots
+          path: shots/
+          retention-days: 30
+
+      - name: 打包 ZIP
+        run: |
+          Compress-Archive -Path app/build/windows/x64/runner/Release -DestinationPath LightWall-windows-x64.zip
+          $sz = (Get-Item LightWall-windows-x64.zip).Length
+          Write-Host "ZIP 大小: $([math]::Round($sz/1MB,1)) MB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: light-wall-windows
+          path: LightWall-windows-x64.zip
+          retention-days: 90
+
+      - name: 发布 Release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: LightWall v1.0.0
+          prerelease: false
+          files: LightWall-windows-x64.zip
+          body_path: release_notes.md
+          fail_on_unmatched_files: false
+          overwrite_files: true

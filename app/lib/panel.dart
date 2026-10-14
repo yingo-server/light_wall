@@ -168,12 +168,16 @@ class _PanelPageState extends State<PanelPage> {
                   _kv('状态', out == null ? '—' : (out.ok ? '正常' : '失败')),
                   _kv('文案', out?.text.isNotEmpty == true ? out!.text : '—'),
                   _kv('光源', _sourceLabel(out?.source)),
-                  _kv('太阳高度', out == null ? '—' : '${out.sunAlt.toStringAsFixed(1)}°'),
-                  _kv('太阳方位', out == null ? '—' : '${out.sunAz.toStringAsFixed(0)}°'),
+                  _kv('太阳高度',
+                      out == null ? '—' : '${out.sunAlt.toStringAsFixed(1)}°'),
+                  _kv('太阳方位',
+                      out == null ? '—' : '${out.sunAz.toStringAsFixed(0)}°'),
                   _kv('辐照度', out == null ? '—' : out.beam.toStringAsFixed(3)),
-                  _kv('直射光斑', out == null
-                      ? '—'
-                      : '${(out.visibleRatio * 100).toStringAsFixed(1)}%'),
+                  _kv(
+                      '直射光斑',
+                      out == null
+                          ? '—'
+                          : '${(out.visibleRatio * 100).toStringAsFixed(1)}%'),
                   _kv('渲染耗时', out == null ? '—' : '${out.elapsedMs} ms'),
                 ],
               ),
@@ -197,7 +201,8 @@ class _PanelPageState extends State<PanelPage> {
                     onPressed: busy ? null : () => widget.scheduler.render(),
                     icon: busy
                         ? const SizedBox(
-                            width: 16, height: 16,
+                            width: 16,
+                            height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.refresh),
                     label: const Text('立即渲染'),
@@ -225,7 +230,8 @@ class _PanelPageState extends State<PanelPage> {
     }
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: Image.memory(out.pngBytes, fit: BoxFit.cover, width: double.infinity),
+      child:
+          Image.memory(out.pngBytes, fit: BoxFit.cover, width: double.infinity),
     );
   }
 
@@ -290,8 +296,13 @@ class _PanelPageState extends State<PanelPage> {
                 label: '字体',
                 value: s.fontFamily,
                 items: const <String>[
-                  'KaiTi', 'STKaiti', 'SimSun', 'SimHei',
-                  'Microsoft YaHei', 'FangSong', 'LiSu',
+                  'KaiTi',
+                  'STKaiti',
+                  'SimSun',
+                  'SimHei',
+                  'Microsoft YaHei',
+                  'FangSong',
+                  'LiSu',
                 ],
                 onChanged: (v) => setState(() {
                   s.fontFamily = v ?? s.fontFamily;
@@ -340,6 +351,45 @@ class _PanelPageState extends State<PanelPage> {
           ),
         ),
         const SizedBox(height: 16),
+        _card(
+          '画面微调',
+          Column(
+            children: <Widget>[
+              _slider(
+                label: '曝光',
+                value: s.exposure,
+                min: 0.6,
+                max: 1.6,
+                display: '×${s.exposure.toStringAsFixed(2)}',
+                onChanged: (v) => setState(() => s.exposure = v),
+              ),
+              _slider(
+                label: '饱和度',
+                value: s.saturation,
+                min: 0.6,
+                max: 1.5,
+                display: '×${s.saturation.toStringAsFixed(2)}',
+                onChanged: (v) => setState(() => s.saturation = v),
+              ),
+              _slider(
+                label: '材质耦合',
+                value: s.materialCoupling,
+                min: 0.0,
+                max: 1.0,
+                display: s.materialCoupling.toStringAsFixed(2),
+                onChanged: (v) => setState(() => s.materialCoupling = v),
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  '材质耦合让字随墙面起伏或实或虚（0 = 关闭）。',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         ExpansionTile(
           title: const Text('变量速查'),
           subtitle: const Text('点右侧按钮复制'),
@@ -360,9 +410,12 @@ class _PanelPageState extends State<PanelPage> {
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: <Widget>[
-            TextButton(onPressed: () => setState(() => _dirty = false), child: const Text('放弃')),
+            TextButton(
+                onPressed: () => setState(() => _dirty = false),
+                child: const Text('放弃')),
             const SizedBox(width: 8),
-            FilledButton(onPressed: _applyAndRender, child: const Text('保存并渲染')),
+            FilledButton(
+                onPressed: _applyAndRender, child: const Text('保存并渲染')),
           ],
         ),
       ],
@@ -384,9 +437,9 @@ class _PanelPageState extends State<PanelPage> {
                 _bgTile('内置 ${i + 1}', kBuiltinBackgrounds[i],
                     selected: s.backgrounds.isEmpty && s.builtinIndex == i,
                     onTap: () => setState(() {
-                      s.builtinIndex = i;
-                      s.save();
-                    })),
+                          s.builtinIndex = i;
+                          s.save();
+                        })),
             ],
           ),
         ),
@@ -441,7 +494,8 @@ class _PanelPageState extends State<PanelPage> {
     );
   }
 
-  Widget _bgTile(String label, String asset, {required bool selected, required VoidCallback onTap}) {
+  Widget _bgTile(String label, String asset,
+      {required bool selected, required VoidCallback onTap}) {
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -451,7 +505,9 @@ class _PanelPageState extends State<PanelPage> {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: selected ? Theme.of(context).colorScheme.primary : Colors.transparent,
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Colors.transparent,
             width: 2,
           ),
         ),
@@ -485,7 +541,8 @@ class _PanelPageState extends State<PanelPage> {
                 label: '城市',
                 value: s.cityIndex.clamp(0, kCities.length - 1),
                 items: <int>[for (var i = 0; i < kCities.length; i++) i],
-                itemLabel: (i) => '${kCities[i].name}  ${kCities[i].lat.toStringAsFixed(2)}, ${kCities[i].lon.toStringAsFixed(2)}',
+                itemLabel: (i) =>
+                    '${kCities[i].name}  ${kCities[i].lat.toStringAsFixed(2)}, ${kCities[i].lon.toStringAsFixed(2)}',
                 onChanged: (v) => setState(() {
                   s.cityIndex = v ?? 0;
                   s.save();
@@ -493,11 +550,14 @@ class _PanelPageState extends State<PanelPage> {
               ),
               _dropdown<double>(
                 label: '窗户朝向',
-                value: kWindowPresets.firstWhere((e) => e.azimuth == s.windowAz,
-                    orElse: () => kWindowPresets.first).azimuth,
+                value: kWindowPresets
+                    .firstWhere((e) => e.azimuth == s.windowAz,
+                        orElse: () => kWindowPresets.first)
+                    .azimuth,
                 items: kWindowPresets.map((e) => e.azimuth).toList(),
                 itemLabel: (az) => kWindowPresets
-                    .firstWhere((e) => e.azimuth == az, orElse: () => kWindowPresets.first)
+                    .firstWhere((e) => e.azimuth == az,
+                        orElse: () => kWindowPresets.first)
                     .label,
                 onChanged: (v) => setState(() {
                   s.windowAz = v ?? s.windowAz;
@@ -510,6 +570,40 @@ class _PanelPageState extends State<PanelPage> {
                   '朝向决定什么时候有直射光斑：东窗上午有光斑，南窗冬季全天有，北窗没有直射。',
                   style: TextStyle(fontSize: 12),
                 ),
+              ),
+              const Divider(height: 24),
+              _slider(
+                label: '窗格行数',
+                value: s.gridRows.toDouble(),
+                min: 1,
+                max: 6,
+                display: '${s.gridRows}',
+                onChanged: (v) => setState(() {
+                  s.gridRows = v.round();
+                  s.save();
+                }),
+              ),
+              _slider(
+                label: '窗格列数',
+                value: s.gridCols.toDouble(),
+                min: 1,
+                max: 6,
+                display: '${s.gridCols}',
+                onChanged: (v) => setState(() {
+                  s.gridCols = v.round();
+                  s.save();
+                }),
+              ),
+              _slider(
+                label: '窗框宽度',
+                value: s.gridFrameRatio,
+                min: 0.02,
+                max: 0.30,
+                display: '${(s.gridFrameRatio * 100).toStringAsFixed(0)}%',
+                onChanged: (v) => setState(() {
+                  s.gridFrameRatio = v;
+                  s.save();
+                }),
               ),
             ],
           ),
@@ -553,7 +647,8 @@ class _PanelPageState extends State<PanelPage> {
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.folder_outlined),
                 title: const Text('打开壁纸输出目录'),
-                onTap: () => Win32.openPath('${Win32.dataDir().path}\\wallpapers'),
+                onTap: () =>
+                    Win32.openPath('${Win32.dataDir().path}\\wallpapers'),
               ),
             ],
           ),
@@ -589,7 +684,9 @@ class _PanelPageState extends State<PanelPage> {
         padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
           children: <Widget>[
-            SizedBox(width: 90, child: Text(k, style: const TextStyle(fontSize: 12))),
+            SizedBox(
+                width: 90,
+                child: Text(k, style: const TextStyle(fontSize: 12))),
             Text(v),
           ],
         ),
@@ -605,7 +702,9 @@ class _PanelPageState extends State<PanelPage> {
   }) =>
       Row(
         children: <Widget>[
-          SizedBox(width: 80, child: Text(label, style: const TextStyle(fontSize: 12))),
+          SizedBox(
+              width: 80,
+              child: Text(label, style: const TextStyle(fontSize: 12))),
           Expanded(
             child: Slider(
               value: value.clamp(min, max),
@@ -616,7 +715,9 @@ class _PanelPageState extends State<PanelPage> {
           ),
           SizedBox(
             width: 48,
-            child: Text(display, textAlign: TextAlign.right, style: const TextStyle(fontSize: 12)),
+            child: Text(display,
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 12)),
           ),
         ],
       );
@@ -632,7 +733,9 @@ class _PanelPageState extends State<PanelPage> {
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Row(
           children: <Widget>[
-            SizedBox(width: 80, child: Text(label, style: const TextStyle(fontSize: 12))),
+            SizedBox(
+                width: 80,
+                child: Text(label, style: const TextStyle(fontSize: 12))),
             Expanded(
               child: DropdownButton<T>(
                 isExpanded: true,

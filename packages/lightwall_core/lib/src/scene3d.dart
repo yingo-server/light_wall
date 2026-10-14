@@ -295,8 +295,10 @@ class Scene3D {
 
     var uPhys = uRel * spanU;
     var vPhys = vRel * spanV;
-    final col = (uPhys / (cellU <= 0 ? 1e-6 : cellU)).floor().clamp(0, cols - 1);
-    final row = (vPhys / (cellV <= 0 ? 1e-6 : cellV)).floor().clamp(0, rows - 1);
+    final col =
+        (uPhys / (cellU <= 0 ? 1e-6 : cellU)).floor().clamp(0, cols - 1);
+    final row =
+        (vPhys / (cellV <= 0 ? 1e-6 : cellV)).floor().clamp(0, rows - 1);
     uPhys -= col * cellU;
     vPhys -= row * cellV;
     return uPhys >= half &&
@@ -325,7 +327,8 @@ class Scene3D {
       for (var s = 0; s < samples; s++) {
         final ox = s == 0 ? 0.0 : 0.0;
         final oy = s == 0 ? 0.0 : 0.0;
-        if (_visibleThroughWindow(pts, o, toSun, ox, oy, penumbra, s)) acc += 1.0;
+        if (_visibleThroughWindow(pts, o, toSun, ox, oy, penumbra, s))
+          acc += 1.0;
       }
       out[i] = acc / samples;
     }

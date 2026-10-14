@@ -93,10 +93,13 @@ TraceOutput traceScene(TraceInput input) {
   final winNormal = scene.windowOutwardNormal();
   final cosInc = math.max(
       0.0,
-      toSun[0] * winNormal[0] + toSun[1] * winNormal[1] + toSun[2] * winNormal[2]);
+      toSun[0] * winNormal[0] +
+          toSun[1] * winNormal[1] +
+          toSun[2] * winNormal[2]);
 
   // 直射可见性（穿窗 + 窗格）
-  final visible = scene.windowVisibilityBatch(pts, sunDir, penumbra: input.penumbra);
+  final visible =
+      scene.windowVisibilityBatch(pts, sunDir, penumbra: input.penumbra);
 
   final cam = scene.camPos;
   final albedo = mat.albedo;
@@ -106,10 +109,17 @@ TraceOutput traceScene(TraceInput input) {
   final isWater = mat.isWater;
 
   final out = Float32List(n * 3);
-  final sunR = input.sunColor[0], sunG = input.sunColor[1], sunB = input.sunColor[2];
-  final ambR = input.ambientColor[0], ambG = input.ambientColor[1], ambB = input.ambientColor[2];
-  final beamScaleAll = input.beamIrradiance * cosInc * input.exposureEv;
-  final ambientScale = input.diffuseIrradiance * input.exposureEv;
+  final sunR = input.sunColor[0],
+      sunG = input.sunColor[1],
+      sunB = input.sunColor[2];
+  final ambR = input.ambientColor[0],
+      ambG = input.ambientColor[1],
+      ambB = input.ambientColor[2];
+  // 直射掠射下限：cos→0 时窗玻璃/窗框散射仍留一层微光（5%）。
+  // 没有它，太阳几乎与窗面平行时光斑会"跳崖式"消失（物理上确实是
+  // 趋近零，但视觉上正午光斑突然全无是 bug 感），参考实现同样踩过。
+  final cosIncFloor = math.max(0.05, cosInc);
+  final beamScaleAll = input.beamIrradiance * cosIncFloor * input.exposureEv;
 
   var visibleCount = 0.0;
 
@@ -119,10 +129,12 @@ TraceOutput traceScene(TraceInput input) {
     final aR = albedo[i3], aG = albedo[i3 + 1], aB = albedo[i3 + 2];
 
     if (valid[i] <= 0) {
-      // 未命中墙（理论上不会发生）：只给环境光
-      out[i3] = aR * ambR * ambientScale;
-      out[i3 + 1] = aG * ambG * ambientScale;
-      out[i3 + 2] = aB * ambB * ambientScale;
+      // 未命中墙（理论上不会发生）：给微弱环境光兜底。
+      // 【真 bug 清理】此前这里乘 ambientScale（由 pipeline 恒传 0 的
+      // diffuseIrradiance 推出），是真死代码；漫射归 pipeline 第 7 步管。
+      out[i3] = aR * ambR * 0.01 * input.exposureEv;
+      out[i3 + 1] = aG * ambG * 0.01 * input.exposureEv;
+      out[i3 + 2] = aB * ambB * 0.01 * input.exposureEv;
       continue;
     }
 
@@ -148,8 +160,7 @@ TraceOutput traceScene(TraceInput input) {
       var vx = cam[0] - px;
       final vy = cam[1] - py;
       var vz = cam[2];
-      final vInv = 1.0 / math.max(
-          math.sqrt(vx * vx + vy * vy + vz * vz), 1e-6);
+      final vInv = 1.0 / math.max(math.sqrt(vx * vx + vy * vy + vz * vz), 1e-6);
       vx *= vInv;
       final vy2 = vy * vInv;
       final vz2 = vz * vInv;
@@ -193,9 +204,12 @@ TraceOutput traceScene(TraceInput input) {
       ry *= rInv;
       rz *= rInv;
       final up = ry.clamp(0.0, 1.0);
-      final envR = (0.55 * up + 1.00 * (1 - up)) * f * 0.15 * input.beamIrradiance;
-      final envG = (0.68 * up + 0.85 * (1 - up)) * f * 0.15 * input.beamIrradiance;
-      final envB = (1.00 * up + 0.65 * (1 - up)) * f * 0.15 * input.beamIrradiance;
+      final envR =
+          (0.55 * up + 1.00 * (1 - up)) * f * 0.15 * input.beamIrradiance;
+      final envG =
+          (0.68 * up + 0.85 * (1 - up)) * f * 0.15 * input.beamIrradiance;
+      final envB =
+          (1.00 * up + 0.65 * (1 - up)) * f * 0.15 * input.beamIrradiance;
 
       var hx = vx + toSun[0];
       var hy = vy2 + toSun[1];

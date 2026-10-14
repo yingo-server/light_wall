@@ -160,6 +160,12 @@ LightInfo computeLightInfo({
   if (sunAlt > -6) {
     final color = twilightColor(sunAlt);
     final scatter = ((0 - sunAlt) / 6.0).clamp(0.0, 1.0);
+    // 暮光漫射随太阳几何变化：日没瞬间还有残余天光，-6° 趋近 0。
+    // 旧实现硬编码 0.06·scatter —— scatter 本身已是线性插值，乘完
+    // 变成 0.06·线性，暮光初期（-0.1°）漫射≈0.001，墙面瞬间全黑，
+    // 日落过渡是"跳崖"而不是"渐暗"。改为：日没时接天光末尾值
+    // （≈skyIrradiance(1°)·0.5），随 |alt| 平滑衰减到 0。
+    final twiDiffuse = skyIrradiance(1.0) * 0.5 * (1.0 - scatter);
     return LightInfo(
       source: LightSource.twilight,
       sunAlt: sunAlt,
@@ -167,7 +173,7 @@ LightInfo computeLightInfo({
       moonAlt: moon.altitude,
       moonPhase: phase,
       beamIrradiance: 0.0,
-      diffuseIrradiance: 0.06 * scatter,
+      diffuseIrradiance: twiDiffuse,
       color: color,
       exposureEv: 1.0,
       label: '暮光 ${sunAlt.toStringAsFixed(1)}°',
@@ -253,6 +259,11 @@ RenderResult render({
     sunAlt: light.source == LightSource.moon ? light.moonAlt : light.sunAlt,
     sunColor: light.color,
     beamIrradiance: light.beamIrradiance,
+    // 【真 bug】漫射此前传 0：TraceInput.diffuseIrradiance 乘进
+    // ambientScale，而 tracer 里**有效像素完全不用 ambientScale**
+    // （死代码），真正的漫射在第 7 步单独算。两边都管同一份量，
+    // 是"既双重计入又互相掩护"的典型结构。现在明确：漫射只归
+    // 第 7 步的窗口孔径照度场管，tracer 只管直射。
     diffuseIrradiance: 0.0,
     ambientColor: light.color,
     penumbra: spec.penumbra,
@@ -263,9 +274,15 @@ RenderResult render({
   final aperture = illuminationField(trace.pts, trace.valid, scene,
       width: width, height: height);
   final ambientRgb = Float32List(n * 3);
-  final ambColor = light.source == LightSource.sun
-      ? skyColor(light.sunAlt)
-      : light.color;
+  // 【真 bug】暮光/夜空的 ambientColor 此前直接复用 light.color
+  // （暮光=地平线方向的太阳色，已经偏暖），旧实现还把暮光漫射
+  // 硬编码 0.06 不随太阳几何变化。这里统一：暮光漫射也按太阳
+  // 几何推（天光随 |sunAlt| 衰减），夜空沿用 nightSkyIrradiance。
+  final ambColor = switch (light.source) {
+    LightSource.sun => skyColor(light.sunAlt),
+    LightSource.twilight => twilightAmbientColor(light.sunAlt),
+    _ => light.color,
+  };
   final ambScale = light.diffuseIrradiance * light.exposureEv;
   var ambMean = ambColor[0] + ambColor[1] + ambColor[2];
   if (ambMean < 1e-6) ambMean = 1.0;
@@ -286,7 +303,8 @@ RenderResult render({
   }
   final patchMask = Float32List(n);
   for (var i = 0; i < n; i++) {
-    patchMask[i] = math.min(1.0, trace.rgb[i * 3] + trace.rgb[i * 3 + 1] + trace.rgb[i * 3 + 2]);
+    patchMask[i] = math.min(
+        1.0, trace.rgb[i * 3] + trace.rgb[i * 3 + 1] + trace.rgb[i * 3 + 2]);
   }
   final linear = synthesize(
     direct: direct,
@@ -295,7 +313,9 @@ RenderResult render({
     height: height,
     look: spec.look,
     materialVariation: matVar,
-    patchMask: null,
+    // 【真 bug】patchMask 上面已经算好（patchMask 变量），这里却传 null，
+    // 导致 synthesize 里"光斑反弹光"（光斑周围暖晕）整段从不执行。
+    patchMask: patchMask,
   );
 
   // 9. 编码
@@ -314,8 +334,23 @@ RenderResult render({
             materialStrength: spec.materialCoupling,
           )
         : textAlpha;
-    final shadowDx = -math.sin(light.sunAz * kDeg) * 0.002;
-    final shadowDy = 0.003;
+    // 接触阴影偏移：字凸出墙面，影子落在**背光侧**。
+    // 旧实现只取 -sin(az)（全局面北坐标），影子方向不随窗户朝向/时间
+    // 正确旋转 —— 东窗上午的影子应偏西（画面左），现在用房间坐标系
+    // 的"太阳→房间"方向在观察墙平面（X 右 / Y 上）的投影取反。
+    final shadowDirRoom = scene.sunToRoomDir(light.sunAz,
+        light.source == LightSource.moon ? light.moonAlt : light.sunAlt);
+    // shadowDirRoom 是"光射向房间"的方向：影子方向即它在墙面上的投影
+    // （x 分量向右为正 → 屏幕 dx；y 分量向上为正 → 屏幕 dy 取反）。
+    // 垂直分量按高度角缩放：太阳越高影子越短。
+    final altForShadow =
+        light.source == LightSource.moon ? light.moonAlt : light.sunAlt;
+    final lenScale = 1.0 /
+        math.max(0.35, math.tan(math.max(4.0, altForShadow) * kDeg)) *
+        0.0022;
+    final shadowDx = (shadowDirRoom[0] * lenScale).clamp(-0.004, 0.004);
+    final shadowDy =
+        (-shadowDirRoom[1] * lenScale + 0.0012).clamp(0.0005, 0.004);
     final occ = computeContactShadow(alpha, width, height,
         shadowDx: shadowDx, shadowDy: shadowDy);
     rgbBytes = fuseText(

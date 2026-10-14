@@ -42,7 +42,8 @@ const double kTwilightAltDeg = 10.0;
 /// 视觉适应曝光倍率（EV）：人眼/相机的自动曝光。
 ///
 /// 晴天下 E ≈ 1，EV ≈ 1；黄昏时按高度角淡出适应，避免"把夜晚提亮成白天"。
-double eyeExposureEv(double illuminance, {double ref = 1.0, double sunAlt = 45.0}) {
+double eyeExposureEv(double illuminance,
+    {double ref = 1.0, double sunAlt = 45.0}) {
   if (illuminance <= 0) return 1.0;
   final w = (math.max(0.0, sunAlt) / kTwilightAltDeg).clamp(0.0, 1.0);
   if (w <= 0) return 1.0;
@@ -192,8 +193,8 @@ Float64List illuminationField(
           final b = low[y0 * ww + x1];
           final c = low[y1 * ww + x0];
           final d = low[y1 * ww + x1];
-          out[y * width + x] = (a * (1 - wx) + b * wx) * (1 - wy) +
-              (c * (1 - wx) + d * wx) * wy;
+          out[y * width + x] =
+              (a * (1 - wx) + b * wx) * (1 - wy) + (c * (1 - wx) + d * wx) * wy;
         }
       }
       return out;
@@ -227,6 +228,8 @@ double airlightFraction(double pathM, {double visM = 20000.0}) {
 /// 二元判定，没有乘入射余弦，于是太阳几乎与窗面平行（掠射）时，
 /// 本该几乎没有直射进屋，却照样投出大片光斑。
 double windowIncidenceCos(List<double> toSun, List<double> windowNormal) =>
-    math.max(0.0, toSun[0] * windowNormal[0] +
-        toSun[1] * windowNormal[1] +
-        toSun[2] * windowNormal[2]);
+    math.max(
+        0.0,
+        toSun[0] * windowNormal[0] +
+            toSun[1] * windowNormal[1] +
+            toSun[2] * windowNormal[2]);

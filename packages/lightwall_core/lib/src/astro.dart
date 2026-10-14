@@ -30,7 +30,9 @@ double julianDay(DateTime dtUtc) {
   var y = utc.year;
   var m = utc.month;
   final d = utc.day;
-  final hh = utc.hour + utc.minute / 60.0 + utc.second / 3600.0 +
+  final hh = utc.hour +
+      utc.minute / 60.0 +
+      utc.second / 3600.0 +
       utc.millisecond / 3600000.0;
   if (m <= 2) {
     y -= 1;
@@ -53,7 +55,8 @@ BodyPosition sunPosition(double lat, double lon, DateTime dt) {
   final n = jd - 2451545.0;
   final l = (280.460 + 0.9856474 * n) % 360.0;
   final g = ((357.528 + 0.9856003 * n) % 360.0) * kDeg;
-  final lambda = ((l + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360.0) * kDeg;
+  final lambda =
+      ((l + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360.0) * kDeg;
   final eps = (23.439 - 0.0000004 * n) * kDeg;
   final alpha = math.atan2(math.cos(eps) * math.sin(lambda), math.cos(lambda));
   final delta = math.asin(math.sin(eps) * math.sin(lambda));
@@ -64,8 +67,10 @@ BodyPosition sunPosition(double lat, double lon, DateTime dt) {
   final phi = lat * kDeg;
   final alt = math.asin(math.sin(phi) * math.sin(delta) +
       math.cos(phi) * math.cos(delta) * math.cos(h));
-  final az = math.atan2(-math.cos(delta) * math.sin(h),
-      math.sin(delta) * math.cos(phi) - math.cos(delta) * math.sin(phi) * math.cos(h));
+  final az = math.atan2(
+      -math.cos(delta) * math.sin(h),
+      math.sin(delta) * math.cos(phi) -
+          math.cos(delta) * math.sin(phi) * math.cos(h));
   var azDeg = az / kDeg % 360.0;
   if (azDeg < 0) azDeg += 360.0;
   return BodyPosition(azDeg, alt / kDeg);
@@ -84,7 +89,8 @@ _SolarDecl _solarDecl(DateTime dtUtc) {
   final n = jd - 2451545.0;
   final l = (280.460 + 0.9856474 * n) % 360.0;
   final g = ((357.528 + 0.9856003 * n) % 360.0) * kDeg;
-  final lambda = ((l + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360.0) * kDeg;
+  final lambda =
+      ((l + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g)) % 360.0) * kDeg;
   final eps = (23.439 - 0.0000004 * n) * kDeg;
   final delta = math.asin(math.sin(eps) * math.sin(lambda));
   // 均时差（分钟 → 小时）
@@ -103,12 +109,14 @@ double alphaDeg(double lambda, double eps, double delta) {
 /// 日出/日落（当地钟表时间，简单由经度与均时差推出）。
 ///
 /// 返回 (rise, set)，极昼/极夜时对应值为 null。
-({DateTime? rise, DateTime? set}) sunRiseSet(double lat, double lon, DateTime dayLocal) {
+({DateTime? rise, DateTime? set}) sunRiseSet(
+    double lat, double lon, DateTime dayLocal) {
   final utcNoon = DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day, 12);
   final decl = _solarDecl(utcNoon);
   final phi = lat * kDeg;
-  final cosH = (math.sin(-0.833 * kDeg) - math.sin(phi) * math.sin(decl.declination)) /
-      (math.cos(phi) * math.cos(decl.declination));
+  final cosH =
+      (math.sin(-0.833 * kDeg) - math.sin(phi) * math.sin(decl.declination)) /
+          (math.cos(phi) * math.cos(decl.declination));
   if (cosH > 1.0) return (rise: null, set: null); // 极夜
   if (cosH < -1.0) return (rise: null, set: null); // 极昼
   final hDeg = math.acos(cosH) / kDeg;
@@ -124,7 +132,8 @@ double alphaDeg(double lambda, double eps, double delta) {
 
 /// 太阳正午（UTC）。
 DateTime? solarNoon(double lon, DateTime dayLocal) {
-  final decl = _solarDecl(DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day, 12));
+  final decl =
+      _solarDecl(DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day, 12));
   final h = 12.0 - lon / 15.0 - decl.eot;
   return DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day)
       .add(Duration(milliseconds: (h * 3600000).round()));
@@ -135,8 +144,9 @@ double dayLengthHours(double lat, DateTime dayLocal) {
   final utcNoon = DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day, 12);
   final decl = _solarDecl(utcNoon);
   final phi = lat * kDeg;
-  final cosH = (math.sin(-0.833 * kDeg) - math.sin(phi) * math.sin(decl.declination)) /
-      (math.cos(phi) * math.cos(decl.declination));
+  final cosH =
+      (math.sin(-0.833 * kDeg) - math.sin(phi) * math.sin(decl.declination)) /
+          (math.cos(phi) * math.cos(decl.declination));
   if (cosH > 1.0) return 0.0;
   if (cosH < -1.0) return 24.0;
   return 2.0 * math.acos(cosH) / kDeg / 15.0;
@@ -168,10 +178,12 @@ BodyPosition moonPosition(double lat, double lon, DateTime dt) {
   final r = math.sqrt(xv * xv + yv * yv);
 
   // 黄道坐标
-  final xh = r * (math.cos(nNode) * math.cos(v + per) -
-      math.sin(nNode) * math.sin(v + per) * math.cos(inc));
-  final yh = r * (math.sin(nNode) * math.cos(v + per) +
-      math.cos(nNode) * math.sin(v + per) * math.cos(inc));
+  final xh = r *
+      (math.cos(nNode) * math.cos(v + per) -
+          math.sin(nNode) * math.sin(v + per) * math.cos(inc));
+  final yh = r *
+      (math.sin(nNode) * math.cos(v + per) +
+          math.cos(nNode) * math.sin(v + per) * math.cos(inc));
   final zh = r * (math.sin(v + per) * math.sin(inc));
 
   final lonEcl = math.atan2(yh, xh);
@@ -197,8 +209,10 @@ BodyPosition moonPosition(double lat, double lon, DateTime dt) {
   final phi = lat * kDeg;
   final alt = math.asin(math.sin(phi) * math.sin(dec) +
       math.cos(phi) * math.cos(dec) * math.cos(h));
-  final az = math.atan2(-math.cos(dec) * math.sin(h),
-      math.sin(dec) * math.cos(phi) - math.cos(dec) * math.sin(phi) * math.cos(h));
+  final az = math.atan2(
+      -math.cos(dec) * math.sin(h),
+      math.sin(dec) * math.cos(phi) -
+          math.cos(dec) * math.sin(phi) * math.cos(h));
   var azDeg = az / kDeg % 360.0;
   if (azDeg < 0) azDeg += 360.0;
   return BodyPosition(azDeg, alt / kDeg);
@@ -216,7 +230,8 @@ double moonPhase(DateTime dtUtc) {
 }
 
 /// 月相亮度因子（0=新月不可见，1=满月最亮）。
-double moonBrightnessFactor(double phase) => (1.0 - math.cos(2 * math.pi * phase)) / 2.0;
+double moonBrightnessFactor(double phase) =>
+    (1.0 - math.cos(2 * math.pi * phase)) / 2.0;
 
 // ─────────────────────────── 大气物理 ───────────────────────────
 
@@ -255,11 +270,16 @@ List<double> solarIrradianceRgb(double altDeg, [double visM = 20000.0]) {
 
   final am = airMassKastenYoung(altDeg);
   const tauR550 = 0.098;
-  double rayleigh(double wl) => tauR550 * math.pow(wl / 550.0, -4.08).toDouble();
+  double rayleigh(double wl) =>
+      tauR550 * math.pow(wl / 550.0, -4.08).toDouble();
 
   final tauM = mieTau(visM);
-  var tr = math.exp(-(rayleigh(650.0) + tauM) * am);
-  var tg = math.exp(-(rayleigh(550.0) + tauM) * am);
+  // 臭氧 Chappuis 带吸收（500~700 nm，峰值 ~600 nm）：低太阳角（am 大）
+  // 时臭氧路径拉长，直射进一步偏暖 —— 这是"夕阳红"在 Rayleigh 之外的
+  // 第二个物理来源，参考实现也没有，低角度渲染的暖度会系统性不足。
+  const tauO3 = 0.03; // 垂直大气臭氧光学厚度 @600nm（教科书常数）
+  var tr = math.exp(-(rayleigh(650.0) + tauM + tauO3 * 0.95) * am);
+  var tg = math.exp(-(rayleigh(550.0) + tauM + tauO3 * 0.65) * am);
   var tb = math.exp(-(rayleigh(450.0) + tauM) * am);
 
   if (altDeg < 8.0) {
@@ -342,7 +362,9 @@ List<double> blackbodyToRgb(double tempK) {
   if (t100 <= 66) {
     r = 255.0;
     g = 99.4708025861 * math.log(t100) - 161.1195681661;
-    b = t100 <= 19 ? 0.0 : 138.5177312231 * math.log(t100 - 10) - 305.0447927307;
+    b = t100 <= 19
+        ? 0.0
+        : 138.5177312231 * math.log(t100 - 10) - 305.0447927307;
   } else {
     r = 329.698727446 * math.pow(t100 - 60, -0.1332047592).toDouble();
     g = 288.1221695283 * math.pow(t100 - 60, -0.0755148492).toDouble();
@@ -370,6 +392,20 @@ List<double> sunColorFromAltitude(double altDeg) {
     t = 1500.0;
   }
   return blackbodyToRgb(t);
+}
+
+/// 暮光天光环境色（线性 RGB）：暮光的天顶已暗，环境光来自
+/// 地平线亮带 —— 比天光更暖更暗。随 |sunAlt| 从暖橙过渡到灰蓝。
+List<double> twilightAmbientColor(double sunAlt) {
+  // sunAlt ∈ (-6, 0]：t=0 → 日没瞬间（暖橙），t=1 → 民用暮光尽头（灰蓝）
+  final t = ((0.0 - sunAlt) / 6.0).clamp(0.0, 1.0);
+  const warm = <double>[0.62, 0.38, 0.22];
+  const cool = <double>[0.22, 0.26, 0.42];
+  return <double>[
+    warm[0] * (1 - t) + cool[0] * t,
+    warm[1] * (1 - t) + cool[1] * t,
+    warm[2] * (1 - t) + cool[2] * t,
+  ];
 }
 
 /// 暮光颜色（线性 RGB）。

@@ -37,15 +37,14 @@ class Win32 {
     if (!isWindows) return false;
     try {
       final fn = _u32.lookupFunction<
-          Int32 Function(Uint32 uiAction, Uint32 uiParam, Pointer<Utf16> pvParam,
-              Uint32 fWinIni),
-          int Function(
-              int uiAction, int uiParam, Pointer<Utf16> pvParam, int fWinIni)>(
-          'SystemParametersInfoW');
+          Int32 Function(Uint32 uiAction, Uint32 uiParam,
+              Pointer<Utf16> pvParam, Uint32 fWinIni),
+          int Function(int uiAction, int uiParam, Pointer<Utf16> pvParam,
+              int fWinIni)>('SystemParametersInfoW');
       final ptr = path.toNativeUtf16();
       try {
-        final ok = fn(_spiSetDeskWallpaper, 0, ptr,
-            _spifUpdateIniFile | _spifSendChange);
+        final ok = fn(
+            _spiSetDeskWallpaper, 0, ptr, _spifUpdateIniFile | _spifSendChange);
         return ok != 0;
       } finally {
         calloc.free(ptr);
@@ -60,21 +59,21 @@ class Win32 {
     if (!isWindows) return false;
     try {
       final regOpen = _api32.lookupFunction<
-          Int32 Function(IntPtr, Pointer<Utf16>, Uint32, Uint32,
-              Pointer<IntPtr>),
-          int Function(int, Pointer<Utf16>, int, int, Pointer<IntPtr>)>(
-          'RegOpenKeyExW');
-      final regSet = _api32.lookupFunction<
-          Int32 Function(IntPtr, Pointer<Utf16>, Uint32, Uint32, Pointer<Uint8>,
-              Uint32),
+          Int32 Function(
+              IntPtr, Pointer<Utf16>, Uint32, Uint32, Pointer<IntPtr>),
           int Function(
-              int, Pointer<Utf16>, int, int, Pointer<Uint8>, int)>(
-          'RegSetValueExW');
+              int, Pointer<Utf16>, int, int, Pointer<IntPtr>)>('RegOpenKeyExW');
+      final regSet = _api32.lookupFunction<
+          Int32 Function(
+              IntPtr, Pointer<Utf16>, Uint32, Uint32, Pointer<Uint8>, Uint32),
+          int Function(int, Pointer<Utf16>, int, int, Pointer<Uint8>,
+              int)>('RegSetValueExW');
       final regDel = _api32.lookupFunction<
           Int32 Function(IntPtr, Pointer<Utf16>),
           int Function(int, Pointer<Utf16>)>('RegDeleteValueW');
-      final regClose = _api32.lookupFunction<Int32 Function(IntPtr),
-          int Function(int)>('RegCloseKey');
+      final regClose =
+          _api32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'RegCloseKey');
 
       final keyPtr = calloc<IntPtr>();
       final subKey = _runKey.toNativeUtf16();
@@ -89,9 +88,13 @@ class Win32 {
             // UTF-16 需要连结尾的 NUL 一起写入
             final units = <int>[];
             for (final unit in quoted.codeUnits) {
-              units..add(unit & 0xff)..add((unit >> 8) & 0xff);
+              units
+                ..add(unit & 0xff)
+                ..add((unit >> 8) & 0xff);
             }
-            units..add(0)..add(0);
+            units
+              ..add(0)
+              ..add(0);
             final data = calloc<Uint8>(units.length);
             try {
               data.asTypedList(units.length).setAll(0, units);
@@ -122,17 +125,18 @@ class Win32 {
     if (!isWindows) return false;
     try {
       final regOpen = _api32.lookupFunction<
-          Int32 Function(IntPtr, Pointer<Utf16>, Uint32, Uint32,
-              Pointer<IntPtr>),
-          int Function(int, Pointer<Utf16>, int, int, Pointer<IntPtr>)>(
-          'RegOpenKeyExW');
+          Int32 Function(
+              IntPtr, Pointer<Utf16>, Uint32, Uint32, Pointer<IntPtr>),
+          int Function(
+              int, Pointer<Utf16>, int, int, Pointer<IntPtr>)>('RegOpenKeyExW');
       final regQuery = _api32.lookupFunction<
           Int32 Function(IntPtr, Pointer<Utf16>, Pointer<Uint32>,
               Pointer<Uint32>, Pointer<Uint8>, Pointer<Uint32>),
           int Function(int, Pointer<Utf16>, Pointer<Uint32>, Pointer<Uint32>,
               Pointer<Uint8>, Pointer<Uint32>)>('RegQueryValueExW');
-      final regClose = _api32.lookupFunction<Int32 Function(IntPtr),
-          int Function(int)>('RegCloseKey');
+      final regClose =
+          _api32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'RegCloseKey');
 
       final keyPtr = calloc<IntPtr>();
       final subKey = _runKey.toNativeUtf16();
@@ -180,8 +184,7 @@ class Win32 {
   /// 主显示器尺寸（逻辑像素）；取不到时回落到 1920×1080。
   static (int, int) screenSize() {
     try {
-      final fn = _u32.lookupFunction<
-          Int32 Function(IntPtr, Pointer<Int32>),
+      final fn = _u32.lookupFunction<Int32 Function(IntPtr, Pointer<Int32>),
           int Function(int, Pointer<Int32>)>('GetSystemMetrics');
       final w = calloc<Int32>();
       final h = calloc<Int32>();
@@ -210,7 +213,9 @@ class Win32 {
 Uint8List utf16Le(String s) {
   final out = <int>[];
   for (final unit in s.codeUnits) {
-    out..add(unit & 0xff)..add((unit >> 8) & 0xff);
+    out
+      ..add(unit & 0xff)
+      ..add((unit >> 8) & 0xff);
   }
   return Uint8List.fromList(out);
 }

@@ -32,7 +32,8 @@ class Variables {
 
     final values = <String, Object?>{
       // ── 时间 ──
-      'time': '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+      'time':
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
       'time_sec': '${now.hour.toString().padLeft(2, '0')}:'
           '${now.minute.toString().padLeft(2, '0')}:'
           '${now.second.toString().padLeft(2, '0')}',
@@ -47,8 +48,24 @@ class Variables {
       'minute': now.minute,
       'second': now.second,
       'weekday': now.weekday,
-      'weekday_cn': const <String>['一', '二', '三', '四', '五', '六', '日'][now.weekday - 1],
-      'week_cn': '星期${const <String>['一', '二', '三', '四', '五', '六', '日'][now.weekday - 1]}',
+      'weekday_cn': const <String>[
+        '一',
+        '二',
+        '三',
+        '四',
+        '五',
+        '六',
+        '日'
+      ][now.weekday - 1],
+      'week_cn': '星期${const <String>[
+        '一',
+        '二',
+        '三',
+        '四',
+        '五',
+        '六',
+        '日'
+      ][now.weekday - 1]}',
       'month_cn': '${now.month}月',
       'yearday': _dayOfYear(now),
       'quarter': ((now.month - 1) ~/ 3) + 1,
@@ -56,8 +73,9 @@ class Variables {
       'iso': now.toIso8601String(),
       'utc_time': '${now.toUtc().hour.toString().padLeft(2, '0')}:'
           '${now.toUtc().minute.toString().padLeft(2, '0')}',
-      'utc_date': '${now.toUtc().year}-${now.toUtc().month.toString().padLeft(2, '0')}-'
-          '${now.toUtc().day.toString().padLeft(2, '0')}',
+      'utc_date':
+          '${now.toUtc().year}-${now.toUtc().month.toString().padLeft(2, '0')}-'
+              '${now.toUtc().day.toString().padLeft(2, '0')}',
 
       // ── 节令 ──
       'season': _season(now.month),
@@ -84,7 +102,9 @@ class Variables {
       // ── 系统 / 运行时 ──
       'seq': seq,
       'hostname': Platform.localHostname,
-      'user': Platform.environment['USERNAME'] ?? Platform.environment['USER'] ?? '',
+      'user': Platform.environment['USERNAME'] ??
+          Platform.environment['USER'] ??
+          '',
       'os': Platform.operatingSystem,
 
       // ── 名称 ──
@@ -100,6 +120,7 @@ class Variables {
         final today = DateTime(ctx.now.year, ctx.now.month, ctx.now.day);
         return target.difference(today).inDays;
       },
+
       /// 从目标日期起已过多少天。
       'days_since': (args, ctx) {
         final target = _parseDate(args.isEmpty ? null : args[0]);
@@ -107,6 +128,7 @@ class Variables {
         final today = DateTime(ctx.now.year, ctx.now.month, ctx.now.day);
         return today.difference(target).inDays;
       },
+
       /// 倒计时文案：还有 N 天 / 就是今天 / 已过 N 天
       'countdown': (args, ctx) {
         final target = _parseDate(args.isEmpty ? null : args[0]);
@@ -117,6 +139,7 @@ class Variables {
         if (d == 0) return '就是今天';
         return '已过 ${-d} 天';
       },
+
       /// 倒计时天数（正数=还有，负数=已过）
       'cd_days': (args, ctx) {
         final target = _parseDate(args.isEmpty ? null : args[0]);
@@ -124,12 +147,15 @@ class Variables {
         final today = DateTime(ctx.now.year, ctx.now.month, ctx.now.day);
         return target.difference(today).inDays;
       },
+
       /// 当天进度 0~1（可传小时表示"到某点为止"）
       'day_progress': (args, ctx) {
         final h = args.length > 1 ? _toDouble(args[1]) : 24.0;
-        final passed = (ctx.now.hour + ctx.now.minute / 60.0) / (h <= 0 ? 24.0 : h);
+        final passed =
+            (ctx.now.hour + ctx.now.minute / 60.0) / (h <= 0 ? 24.0 : h);
         return passed.clamp(0.0, 1.0);
       },
+
       /// 两个日期之间的进度（0~1，start 起 end 止）
       'progress': (args, ctx) {
         if (args.length < 2) return null;
@@ -137,14 +163,17 @@ class Variables {
         final b = _parseDate(args[1]);
         if (a == null || b == null || b == a) return null;
         final today = DateTime(ctx.now.year, ctx.now.month, ctx.now.day);
-        return (today.difference(a).inDays / b.difference(a).inDays).clamp(0.0, 1.0);
+        return (today.difference(a).inDays / b.difference(a).inDays)
+            .clamp(0.0, 1.0);
       },
+
       /// 某个日期是星期几（中文）
       'weekday_of': (args, ctx) {
         final d = _parseDate(args.isEmpty ? null : args[0]);
         if (d == null) return null;
         return const <String>['一', '二', '三', '四', '五', '六', '日'][d.weekday - 1];
       },
+
       /// 日期加减
       'add_days': (args, ctx) {
         final d = _parseDate(args.isEmpty ? null : args[0]);
@@ -153,18 +182,29 @@ class Variables {
         final r = d.add(Duration(days: n));
         return '${r.year}-${r.month.toString().padLeft(2, '0')}-${r.day.toString().padLeft(2, '0')}';
       },
+
       /// 星期几的中文（与 weekday_of 等价，便于书写）
       'weekday_cn_of': (args, ctx) {
         final d = _parseDate(args.isEmpty ? null : args[0]);
         if (d == null) return null;
-        return '星期${const <String>['一', '二', '三', '四', '五', '六', '日'][d.weekday - 1]}';
+        return '星期${const <String>[
+          '一',
+          '二',
+          '三',
+          '四',
+          '五',
+          '六',
+          '日'
+        ][d.weekday - 1]}';
       },
+
       /// 按序号轮流取值（每 3 分钟一次渲染 → 用来做轮播文案）
       'rotate': (args, ctx) {
         if (args.isEmpty) return null;
         final n = (ctx['seq'] as int? ?? 0);
         return args[n % args.length];
       },
+
       /// 判断是否在某个时间段内（含边界，小时）
       'in_hours': (args, ctx) {
         if (args.length < 2) return false;
@@ -173,11 +213,20 @@ class Variables {
         final h = ctx.now.hour + ctx.now.minute / 60.0;
         return h >= a && h <= b;
       },
+
       /// 取变量的值（用于变量名拼接）
       'var': (args, ctx) => args.isEmpty ? null : ctx['${args[0]}'],
+
       /// 中文星期
-      'cn_week': (args, ctx) =>
-          '星期${const <String>['一', '二', '三', '四', '五', '六', '日'][ctx.now.weekday - 1]}',
+      'cn_week': (args, ctx) => '星期${const <String>[
+            '一',
+            '二',
+            '三',
+            '四',
+            '五',
+            '六',
+            '日'
+          ][ctx.now.weekday - 1]}',
     };
 
     return TemplateContext(now: now, values: values, functions: functions);
