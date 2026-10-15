@@ -22,11 +22,24 @@ class PanelPage extends StatefulWidget {
     required this.settings,
     required this.scheduler,
     required this.onExit,
+    this.initialTab = 0,
+    this.tabController,
   });
 
   final AppSettings settings;
   final RenderScheduler scheduler;
   final VoidCallback onExit;
+
+  /// `--shot` 用：直接指定初始页签。
+  final int initialTab;
+
+  /// `--shot` 用：暴露页签控制器，让外部在树建好后切换页签。
+  ///
+  /// 【真 bug 修复】此前 --shot 靠"合成一次点击 NavigationRail"来切页，
+  /// 假设导航栏 4 等分。实际 NavigationRail 的 destination 会随内容
+  /// 伸展、等分假设不成立 → bg / settings 两页点空，截图退回 home，
+  /// 回归对比形同虚设（4 张图里 3 张是同一张）。
+  final ValueNotifier<int>? tabController;
 
   @override
   State<PanelPage> createState() => _PanelPageState();
@@ -41,10 +54,18 @@ class _PanelPageState extends State<PanelPage> {
   void initState() {
     super.initState();
     _textCtrl = TextEditingController(text: widget.settings.template);
+    _tab = widget.initialTab.clamp(0, 3);
+    widget.tabController?.addListener(_onExternalTab);
+  }
+
+  void _onExternalTab() {
+    final v = widget.tabController?.value ?? _tab;
+    if (v != _tab && mounted) setState(() => _tab = v);
   }
 
   @override
   void dispose() {
+    widget.tabController?.removeListener(_onExternalTab);
     _textCtrl.dispose();
     super.dispose();
   }

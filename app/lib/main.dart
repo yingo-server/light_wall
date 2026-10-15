@@ -14,8 +14,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart'
-    show GestureBinding, PointerDeviceKind, PointerDownEvent, PointerUpEvent;
 import 'package:flutter/rendering.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -272,24 +270,24 @@ Future<void> _runShot(CliOptions cli) async {
   await scheduler.render();
 
   final boundary = GlobalKey(debugLabel: 'lw_shot_boundary');
+  final tabCtl = ValueNotifier<int>(uiPageIndex(cli.uiPage));
   runApp(_ShotApp(
     settings: settings,
     scheduler: scheduler,
     boundaryKey: boundary,
+    tabController: tabCtl,
   ));
 
-  await _pumpFrames(4);
+  await _pumpFrames(6);
 
-  final index = uiPageIndex(cli.uiPage);
-  if (index != 0) {
-    final ok = await _selectNavRailTab(boundary, index);
-    if (ok) {
-      await _pumpFrames(4);
-    } else {
-      // 兜底：模拟点击失败就退回概览页，仍然产出图片，不让 CI 红掉。
-      stdout.writeln('[LightWall] 警告：无法切换到「${cli.uiPage}」页，'
-          '已退回概览页截图');
-    }
+  if (cli.uiPage != 'home') {
+    // 【真 bug 修复】此前靠"合成一次点击 NavigationRail"切页，假设导航栏
+    // 4 等分。实际 NavigationRail 的 destination 会随内容伸展，等分假设
+    // 不成立 → bg / settings 点空、截图退回 home，UI 回归形同虚设。
+    // 现在由 PanelPage 暴露 ValueNotifier 直接驱动状态，重建后再截图。
+    tabCtl.value = uiPageIndex(cli.uiPage);
+    await _pumpFrames(6);
+    stdout.writeln('[LightWall] 已切到「${cli.uiPage}」页');
   }
 
   final bytes = await _capturePng(boundary);
@@ -346,71 +344,19 @@ Future<Uint8List?> _capturePng(GlobalKey boundary) async {
   }
 }
 
-/// 用"合成一次点击"的方式把面板切到第 [index] 个页签，返回是否成功。
-///
-/// 为什么这么绕：PanelPage 的页签是它的私有 State，且是已完成、不可修改的
-/// 文件，这里既拿不到它的 controller，也不能给它加参数。于是退一步，
-/// 找到左侧 NavigationRail 的渲染框，按 4 等分算出目标页签的中心，
-/// 直接向 GestureBinding 投递一对 down/up 指针事件 —— 效果和用户用鼠标点
-/// 完全一致，走的是同一条命中测试路径。
-///
-/// CI 专用假设：导航栏没有 leading 项，4 个目的地均分整个高度。
-/// 若将来 PanelPage 加了 leading，这里需要改 `_kNavDestinations`。
-Future<bool> _selectNavRailTab(GlobalKey boundary, int index) async {
-  const int navDestinations = 4;
-  try {
-    final ctx = boundary.currentContext;
-    if (ctx == null || ctx is! Element) return false;
-    final rail = _findRailElement(ctx);
-    if (rail == null) return false;
-    final box = rail.findRenderObject();
-    if (box is! RenderBox || !box.hasSize) return false;
-
-    final step = box.size.height / navDestinations;
-    final local = Offset(box.size.width / 2, step * (index + 0.5));
-    final global = box.localToGlobal(local);
-
-    final gestures = GestureBinding.instance;
-    gestures.handlePointerEvent(PointerDownEvent(
-      position: global,
-      kind: PointerDeviceKind.touch,
-    ));
-    gestures.handlePointerEvent(PointerUpEvent(
-      position: global,
-      kind: PointerDeviceKind.touch,
-    ));
-    return true;
-  } catch (e) {
-    debugPrint('[LightWall] 切换页签失败：$e');
-    return false;
-  }
-}
-
-/// 在 [ctx] 的子树里找出 NavigationRail 对应的 Element。
-Element? _findRailElement(Element ctx) {
-  Element? found;
-  ctx.visitChildren((Element child) {
-    if (found != null) return;
-    if (child.widget.runtimeType.toString() == 'NavigationRail') {
-      found = child;
-      return;
-    }
-    found ??= _findRailElement(child);
-  });
-  return found;
-}
-
 /// `--shot` 专用的根组件：外面套一层 RepaintBoundary 供截图取用。
 class _ShotApp extends StatelessWidget {
   const _ShotApp({
     required this.settings,
     required this.scheduler,
     required this.boundaryKey,
+    required this.tabController,
   });
 
   final AppSettings settings;
   final RenderScheduler scheduler;
   final GlobalKey boundaryKey;
+  final ValueNotifier<int> tabController;
 
   @override
   Widget build(BuildContext context) {
@@ -421,6 +367,7 @@ class _ShotApp extends StatelessWidget {
         scheduler: scheduler,
         // 截图模式下没有任何人点"关闭"，给个空实现即可。
         onExit: () {},
+        tabController: tabController,
       ),
     );
   }
