@@ -244,7 +244,7 @@ class _PanelPageState extends State<PanelPage> {
     );
   }
 
-  Widget _sourceLabel(String? s) {
+  static String _sourceLabel(String? s) {
     switch (s) {
       case 'sun':
         return '日光';
@@ -269,11 +269,8 @@ class _PanelPageState extends State<PanelPage> {
     final winAz = s.windowAz;
     final rel = ((sunAz - winAz + 540) % 360) - 180;
     final behind = rel.abs() > 90;
-    // 相对夹角越小 → 入射越正 → 光斑越亮
-    final cosEst = behind
-        ? 0.0
-        : (1 - (rel.abs() * (90 - (out.sunAlt < 0 ? 0 : 1)) / 90))
-            .clamp(0.0, 1.0);
+    // 相对夹角越小 → 入射越正 → 光斑越亮（用 cos 作粗略估计）
+    final double cosEst = behind ? 0.0 : (1 - rel.abs() / 90).clamp(0.0, 1.0);
 
     final (verdict, detail, color) = behind
         ? (
@@ -347,7 +344,7 @@ class _PanelPageState extends State<PanelPage> {
     );
   }
 
-  static String _compass(double az) {
+  String _compass(double az) {
     const names = <String>[
       '北',
       '东北',
