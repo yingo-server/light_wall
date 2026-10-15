@@ -370,6 +370,11 @@ class Scene3D {
   }
 
   /// 窗户外法线（房间坐标，指向窗外）。
+  ///
+  /// 【真 bug】back 墙此前返回 +Z：那是**指向房间内部**（朝观察墙）的方向，
+  /// 不是窗外。规范系里 back 墙在 z=+roomD，窗外是 −Z（规范系南）。
+  /// 符号反了 → 南窗的 cosInc = toSun·(+Z) 恒为负被钳到 0，
+  /// "南窗冬季全天有直射"这条产品承诺完全不成立（渲染全黑）。
   List<double> windowOutwardNormal() {
     switch (winWall) {
       case Wall.east:
@@ -377,7 +382,7 @@ class Scene3D {
       case Wall.west:
         return <double>[-1, 0, 0];
       case Wall.back:
-        return <double>[0, 0, 1];
+        return <double>[0, 0, -1];
     }
   }
 
@@ -403,17 +408,26 @@ class Scene3D {
   }
 
   /// 由窗户朝向选择观察墙：
-  ///   · 东西向窗户 → 选与之垂直、且朝南的那面墙（保留参考实现的斜切长光斑）
-  ///   · 南北向窗户 → 垂直墙接不到直射，改为正对窗户的对面墙
+  ///   · 东西向窗户 → 选与之垂直、且朝南的那面墙（斜切长光斑）
+  ///   · 南北向窗户 → 选东侧墙作观察墙（让南向/北向光斜切上去），
+  ///     而不是正对窗户的对面墙 —— 正对时低角度冬季光斑物理上落在
+  ///     地板/后墙，观察墙永远看不到直射光斑（产品承诺"南窗冬季全天
+  ///     有直射"不成立）。斜切则全天都有长条光斑扫过侧墙。
   static double chooseViewWall(double windowAz) {
     final w = normAz(windowAz);
     // 与"东西方向"的偏离（取离东/西更近的那个）
     final devE = azDelta(w, 90.0);
     final devW = azDelta(w, 270.0);
     final dev = devE < devW ? devE : devW;
-    if (dev > 45.0) return normAz(w + 180.0);
-    final a = normAz(w + 90.0);
-    final b = normAz(w - 90.0);
-    return azDelta(a, 180.0) <= azDelta(b, 180.0) ? a : b;
+    // 东西向（含对角）：配垂直墙
+    if (dev <= 45.0) {
+      final a = normAz(w + 90.0);
+      final b = normAz(w - 90.0);
+      return azDelta(a, 180.0) <= azDelta(b, 180.0) ? a : b;
+    }
+    // 南北向（含对角）：配东侧墙（观察墙内法线朝东=az 90），
+    // 窗户在西墙（az 270 规范系）—— 南向光从南向北斜切西墙。
+    // 北向窗同理（北向低角度漫射也有方向性）。
+    return 90.0;
   }
 }

@@ -61,11 +61,11 @@ void main() {
     test('东西南北四面各自落到正确的墙', () {
       expect(Scene3D(SceneConfig(), 90).winWall, Wall.east);
       expect(Scene3D(SceneConfig(), 270).winWall, Wall.west);
-      // 南向窗：观察墙正对窗户，窗落在身后的墙上
-      expect(Scene3D(SceneConfig(), 180).winWall, Wall.back);
-      // 北向窗：北半球无直射，几何上同样成立
-      final n = Scene3D(SceneConfig(), 0);
-      expect(n.winWall, isNotNull);
+      // 南向窗：观察墙选东侧墙（斜切），南窗落在西墙 —— 正对布局下
+      // 低角度冬季光斑物理上落在地板，观察墙永远看不到直射。
+      expect(Scene3D(SceneConfig(), 180).winWall, Wall.west);
+      // 北向窗：同样配东侧观察墙，北窗落在东墙（canonical=90）
+      expect(Scene3D(SceneConfig(), 0).winWall, Wall.east);
     });
 
     test('参考实现里"西北向"会退化成"西向"，本实现不会', () {
