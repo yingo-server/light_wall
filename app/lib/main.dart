@@ -168,12 +168,11 @@ Future<void> main(List<String> args) async {
       stderr.writeln('[LightWall] 参数错误：$e');
     }
     stderr.writeln(CliOptions.usage);
-    exitCode = 2;
-    return;
+    exit(2);
   }
   if (cli.help) {
     stdout.writeln(CliOptions.usage);
-    return;
+    exit(0);
   }
 
   try {
@@ -222,8 +221,7 @@ Future<void> _runRenderOnce(CliOptions cli) async {
   final out = scheduler.last.value;
   if (out == null || !out.ok) {
     stderr.writeln('[LightWall] 渲染失败：${out?.message ?? '未知错误'}');
-    exitCode = 1;
-    return;
+    exit(1);
   }
   if (cli.outPath != null) {
     try {
@@ -235,13 +233,17 @@ Future<void> _runRenderOnce(CliOptions cli) async {
       stdout.writeln('[LightWall] 已写入 ${target.path}');
     } catch (e) {
       stderr.writeln('[LightWall] 写入 ${cli.outPath} 失败：$e');
-      exitCode = 1;
-      return;
+      exit(1);
     }
   }
   stdout.writeln('[LightWall] 渲染完成 ${out.elapsedMs} ms · '
       '光源 ${out.source} · 太阳高度 ${out.sunAlt.toStringAsFixed(1)}° · '
       '直射光斑 ${(out.visibleRatio * 100).toStringAsFixed(1)}%');
+  // 【真 bug】此前这里只 return，但 main() 开头已经
+  // WidgetsFlutterBinding.ensureInitialized() —— Flutter 引擎的消息循环
+  // 已启动且没有任何东西会关闭它，进程永远不退出（CI 里表现为
+  // Start-Process -Wait 挂死 >16 分钟）。一次性任务必须显式 exit。
+  exit(0);
 }
 
 // ─────────────────────────────────────────────────────────────

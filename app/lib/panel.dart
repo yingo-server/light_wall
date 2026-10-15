@@ -5,6 +5,8 @@
 //   文字 —— 模板（含变量）、字体、位置、年代感
 //   底图 —— 内置三张 + 导入自己的图片
 //   设置 —— 位置、窗户朝向、开机自启、隐藏托盘
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lightwall_core/lightwall_core.dart';
@@ -180,10 +182,20 @@ class _PanelPageState extends State<PanelPage> {
               ),
             ),
             const SizedBox(height: 16),
+            _diagnostics(out),
+            const SizedBox(height: 16),
             _preview(out),
             const SizedBox(height: 16),
             Row(
               children: <Widget>[
+                ValueListenableBuilder<String>(
+                  valueListenable: widget.scheduler.status,
+                  builder: (context, st, _) => Text(
+                    st,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                const Spacer(),
                 ValueListenableBuilder<DateTime?>(
                   valueListenable: widget.scheduler.nextRun,
                   builder: (context, next, _) => Text(
@@ -191,7 +203,7 @@ class _PanelPageState extends State<PanelPage> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 12),
                 ValueListenableBuilder<bool>(
                   valueListenable: widget.scheduler.busy,
                   builder: (context, busy, _) => FilledButton.icon(
@@ -232,7 +244,7 @@ class _PanelPageState extends State<PanelPage> {
     );
   }
 
-  static String _sourceLabel(String? s) {
+  Widget _sourceLabel(String? s) {
     switch (s) {
       case 'sun':
         return '日光';
@@ -245,6 +257,109 @@ class _PanelPageState extends State<PanelPage> {
       default:
         return '—';
     }
+  }
+
+  /// 光照诊断卡：把"为什么是这样"讲清楚，而不是只丢一串数字。
+  ///
+  /// 用户最常见的困惑是"我选了南窗，怎么没有光斑"——答案几乎总是
+  /// 「太阳此刻与窗面夹角太大/太阳在窗背面」。这里直接给出结论 + 依据。
+  Widget _diagnostics(RenderOutcome? out) {
+    if (out == null) return const SizedBox.shrink();
+    final sunAz = out.sunAz;
+    final winAz = s.windowAz;
+    final rel = ((sunAz - winAz + 540) % 360) - 180;
+    final behind = rel.abs() > 90;
+    // 相对夹角越小 → 入射越正 → 光斑越亮
+    final cosEst = behind
+        ? 0.0
+        : (1 - (rel.abs() * (90 - (out.sunAlt < 0 ? 0 : 1)) / 90))
+            .clamp(0.0, 1.0);
+
+    final (verdict, detail, color) = behind
+        ? (
+            '此刻太阳在窗背面',
+            '太阳方位 ${sunAz.toStringAsFixed(0)}°，窗户朝向 '
+                '${_compass(winAz)}（${winAz.toStringAsFixed(0)}°），'
+                '相对方位 ${rel.toStringAsFixed(0)}° > 90°，'
+                '直射光进不来，墙上只有天光漫射。',
+            Colors.orange.shade800,
+          )
+        : out.visibleRatio < 0.005
+            ? (
+                '此刻没有直射光斑',
+                '太阳方位 ${sunAz.toStringAsFixed(0)}°，与窗面夹角约 '
+                    '${rel.abs().toStringAsFixed(0)}°，高度 '
+                    '${out.sunAlt.toStringAsFixed(1)}°。'
+                    '入射过掠（cos≈${cosEst.toStringAsFixed(2)}），'
+                    '投影面积极小，光斑几乎不可见。',
+                Colors.blueGrey.shade700,
+              )
+            : (
+                '直射光斑已生成',
+                '太阳方位 ${sunAz.toStringAsFixed(0)}°，与窗面夹角约 '
+                    '${rel.abs().toStringAsFixed(0)}°，'
+                    '直射 ${out.beam.toStringAsFixed(3)}，'
+                    '覆盖墙面 ${(out.visibleRatio * 100).toStringAsFixed(1)}%。',
+                Colors.green.shade700,
+              );
+
+    return _card(
+      '光照诊断',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: color.withValues(alpha: 0.35)),
+            ),
+            child: Text(
+              verdict,
+              style: TextStyle(
+                  color: color, fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(detail, style: const TextStyle(fontSize: 12, height: 1.5)),
+          const SizedBox(height: 10),
+          _sunDial(sunAz, winAz),
+        ],
+      ),
+    );
+  }
+
+  /// 罗盘小图：直观显示太阳方位与窗户朝向的关系。
+  Widget _sunDial(double sunAz, double winAz) {
+    const size = 132.0;
+    return SizedBox(
+      height: size,
+      child: Center(
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: CustomPaint(
+            painter: _SunDialPainter(sunAz: sunAz, winAz: winAz),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _compass(double az) {
+    const names = <String>[
+      '北',
+      '东北',
+      '东',
+      '东南',
+      '南',
+      '西南',
+      '西',
+      '西北',
+    ];
+    final idx = (((az % 360) + 22.5) ~/ 45).toInt() % 8;
+    return names[idx];
   }
 
   // ───────────────────────── 文字 ─────────────────────────
@@ -748,6 +863,91 @@ class _PanelPageState extends State<PanelPage> {
           ],
         ),
       );
+}
+
+/// 罗盘小图：太阳方位 vs 窗户朝向。
+///
+/// 用极坐标把"太阳在哪"和"窗朝哪"画在同一张图上，比任何文字都直观：
+/// 用户一眼就能看出太阳是不是落在窗户的那半边。
+class _SunDialPainter extends CustomPainter {
+  _SunDialPainter({required this.sunAz, required this.winAz});
+
+  final double sunAz;
+  final double winAz;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2 - 8;
+
+    // 底盘
+    canvas.drawCircle(c, r, Paint()..color = const Color(0xFFE8E2D9));
+    canvas.drawCircle(
+        c,
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = const Color(0xFFB9B0A2));
+
+    // 八个方位刻度
+    final tick = Paint()
+      ..color = const Color(0xFF9A9083)
+      ..strokeWidth = 1;
+    for (var i = 0; i < 8; i++) {
+      final a = (i * 45 - 90) * math.pi / 180;
+      canvas.drawLine(
+        Offset(c.dx + math.cos(a) * (r - 4), c.dy + math.sin(a) * (r - 4)),
+        Offset(c.dx + math.cos(a) * r, c.dy + math.sin(a) * r),
+        tick,
+      );
+    }
+
+    // 窗户扇区（以窗法线为中心 ±60°）
+    final winRad = (winAz - 90) * math.pi / 180;
+    final rel = ((sunAz - winAz + 540) % 360) - 180;
+    final facing = rel.abs() <= 90;
+    canvas.drawArc(
+      Rect.fromCircle(center: c, radius: r - 3),
+      winRad - math.pi / 3,
+      math.pi * 2 / 3,
+      true,
+      Paint()
+        ..color = (facing ? const Color(0xFF4CAF50) : const Color(0xFF9E9E9E))
+            .withValues(alpha: 0.18),
+    );
+
+    // 窗户法线（短线）
+    canvas.drawLine(
+      c,
+      Offset(c.dx + math.cos(winRad) * (r - 12),
+          c.dy + math.sin(winRad) * (r - 12)),
+      Paint()
+        ..color = const Color(0xFF2E7D32)
+        ..strokeWidth = 2.5,
+    );
+
+    // 太阳
+    final sunRad = (sunAz - 90) * math.pi / 180;
+    final sp = Offset(
+        c.dx + math.cos(sunRad) * (r - 16), c.dy + math.sin(sunRad) * (r - 16));
+    canvas.drawCircle(sp, 8, Paint()..color = const Color(0xFFFFB300));
+    canvas.drawCircle(
+        sp,
+        13,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = const Color(0xFFFFB300).withValues(alpha: 0.55));
+
+    // 中心十字
+    canvas.drawLine(Offset(c.dx - 4, c.dy), Offset(c.dx + 4, c.dy), tick);
+    canvas.drawLine(Offset(c.dx, c.dy - 4), Offset(c.dx, c.dy + 4), tick);
+  }
+
+  @override
+  bool shouldRepaint(_SunDialPainter old) =>
+      old.sunAz != sunAz || old.winAz != winAz;
 }
 
 /// 极简文件选择（优先原生对话框；不可用时提示手动路径）。
