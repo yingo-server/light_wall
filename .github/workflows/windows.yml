@@ -73,8 +73,14 @@ jobs:
         working-directory: app
         run: |
           $out = Join-Path $env:GITHUB_WORKSPACE 'smoke.png'
-          & .\build\windows\x64\runner\Release\light_wall.exe --render --out $out
-          if (Test-Path $out) { Write-Host "命令行渲染 OK" } else { Write-Host "命令行渲染未产出" }
+          $exe = ".\build\windows\x64\runner\Release\light_wall.exe"
+          # 必须用 Start-Process -Wait：light_wall.exe 是 GUI 子系统程序，
+          # PowerShell 的 `& $exe` 不会等待它退出，会立刻返回去检查文件
+          # → 永远读到"未产出"（假阴性）。-Wait 才真正串行。
+          $p = Start-Process -FilePath $exe -ArgumentList @('--render','--out',$out) -Wait -PassThru -NoNewWindow
+          Write-Host "退出码: $($p.ExitCode)"
+          if (Test-Path $out) { Write-Host "命令行渲染 OK ($((Get-Item $out).Length) 字节)" }
+          else { Write-Host "命令行渲染未产出"; exit 1 }
 
       - name: UI 截图（供回归对比）
         working-directory: app
@@ -85,10 +91,17 @@ jobs:
           foreach ($p in $pages) {
             $p = $p.Trim()
             if (-not $p) { continue }
+            $shot = Join-Path $env:GITHUB_WORKSPACE "shots\ui_$p.png"
             Write-Host "截图: $p"
-            & $exe --shot (Join-Path $env:GITHUB_WORKSPACE "shots\ui_$p.png") --ui-page $p
+            # 同上：必须 -Wait，否则四个进程并发且步骤结束时被强杀
+            $proc = Start-Process -FilePath $exe -ArgumentList @('--shot',$shot,'--ui-page',$p) -Wait -PassThru -NoNewWindow
+            if (Test-Path $shot) {
+              Write-Host "  → $((Get-Item $shot).Length) 字节 (exit=$($proc.ExitCode))"
+            } else {
+              Write-Host "  → 未产出 (exit=$($proc.ExitCode))"
+              exit 1
+            }
           }
-          Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'shots') | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -101,8 +114,11 @@ jobs:
         if: always()
         with:
           name: ui-shots
-          path: shots/
+          path: |
+            shots/
+            smoke.png
           retention-days: 30
+          if-no-files-found: warn
 
       - name: 打包 ZIP
         run: |
