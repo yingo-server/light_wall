@@ -208,8 +208,12 @@ Float64List apertureIlluminance(
 /// 建筑立面）的能量占多少。用于让环境光有**色**：上半窗进来的天光偏蓝、
 /// 下半窗进来的地面反射光偏暖（真实存在、且与亮度解耦的上暖下冷梯度）。
 ///
-/// 旧实现的孔径积分完全**无色度**：`_skyRadiance` 返回标量，颜色在 pipeline
-/// 里事后乘一个与位置无关的常数色 —— 等价于假设整个窗同色。
+/// 为何用**解析几何**而非采样统计：墙点之"地平线"是过它的一条水平面；
+/// 窗面在垂直方向被其分为上下两段，下段所占比例即
+///     gs = clamp((y_P − v₀)/(v₁ − v₀), 0, 1)。
+/// 旧实现以 4×4 个窗面样本数"地平线以下的样本占比"，只有 **16 个离散档**，
+/// 于是整幅画面出现横向的、通宽的**色带**（档与档之间硬边）。
+/// 解析式随 y_P 连续，永无阶梯，且成本为零。
 Float64List groundShareField(
   Float64List pts,
   Float64List valid,
@@ -220,43 +224,17 @@ Float64List groundShareField(
   final pl = scene.placement();
   final n = valid.length;
   final out = Float64List(n);
-  final u0 = pl.u0, u1 = pl.u1, v0 = pl.v0, v1 = pl.v1;
-  final plane = pl.planeCoord;
-  final eastWest = pl.wall == Wall.east || pl.wall == Wall.west;
+  final v0 = math.min(pl.v0, pl.v1);
+  final v1 = math.max(pl.v0, pl.v1);
+  final span = v1 - v0;
+  if (span <= 1e-6) return out;
   for (var i = 0; i < n; i++) {
-    if (valid[i] <= 0) continue;
-    final o = i * 3;
-    final px = pts[o].clamp(-scene.cfg.roomW * 0.5, scene.cfg.roomW * 0.5);
-    final py = pts[o + 1].clamp(0.0, scene.cfg.roomH);
-    final pz = pts[o + 2].clamp(0.0, scene.cfg.roomD);
-    var total = 0.0;
-    var ground = 0.0;
-    for (var si = 0; si < samplesU; si++) {
-      final u = u0 + (u1 - u0) * (si + 0.5) / samplesU;
-      for (var sj = 0; sj < samplesV; sj++) {
-        final v = v0 + (v1 - v0) * (sj + 0.5) / samplesV;
-        double dx, dy, dz, cosWin;
-        if (eastWest) {
-          dx = plane - px;
-          dy = v - py;
-          dz = u - pz;
-          cosWin = dx.abs();
-        } else {
-          dx = u - px;
-          dy = v - py;
-          dz = plane - pz;
-          cosWin = dz.abs();
-        }
-        final r2 = dx * dx + dy * dy + dz * dz;
-        final r = math.sqrt(math.max(r2, 1e-6));
-        final inv = 1.0 / r;
-        final cosWall = dz.abs() * inv;
-        final contrib = (cosWin * inv) * cosWall * inv2(r2);
-        total += contrib;
-        if (dy * inv < 0.0) ground += contrib; // dirY < 0 → 地平线以下
-      }
+    if (valid[i] <= 0) {
+      out[i] = 0.0;
+      continue;
     }
-    out[i] = total > 1e-12 ? (ground / total).clamp(0.0, 1.0) : 0.0;
+    final py = pts[i * 3 + 1];
+    out[i] = ((py - v0) / span).clamp(0.0, 1.0);
   }
   return out;
 }
