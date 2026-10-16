@@ -270,7 +270,10 @@ Future<void> _runShot(CliOptions cli) async {
   await scheduler.render();
 
   final boundary = GlobalKey(debugLabel: 'lw_shot_boundary');
-  final tabCtl = ValueNotifier<int>(uiPageIndex(cli.uiPage));
+  // 【真 bug】初值必须与"实际渲染的初始页"一致（home=0）：
+  // 若直接把初值设成目标页，后面 `tabCtl.value = target` 就是**同值赋值**，
+  // ValueNotifier 不通知 → PanelPage 永远停在初始页，四张截图全是 home。
+  final tabCtl = ValueNotifier<int>(0);
   runApp(_ShotApp(
     settings: settings,
     scheduler: scheduler,
@@ -280,14 +283,13 @@ Future<void> _runShot(CliOptions cli) async {
 
   await _pumpFrames(6);
 
-  if (cli.uiPage != 'home') {
-    // 【真 bug 修复】此前靠"合成一次点击 NavigationRail"切页，假设导航栏
-    // 4 等分。实际 NavigationRail 的 destination 会随内容伸展，等分假设
-    // 不成立 → bg / settings 点空、截图退回 home，UI 回归形同虚设。
-    // 现在由 PanelPage 暴露 ValueNotifier 直接驱动状态，重建后再截图。
-    tabCtl.value = uiPageIndex(cli.uiPage);
+  final target = uiPageIndex(cli.uiPage);
+  if (target != 0) {
+    // 由 PanelPage 暴露的 ValueNotifier 直接驱动页签状态（异步 setState →
+    // 多推几帧确保重建+重绘落定后再抓图）。
+    tabCtl.value = target;
     await _pumpFrames(6);
-    stdout.writeln('[LightWall] 已切到「${cli.uiPage}」页');
+    stdout.writeln('[LightWall] 已切到「${cli.uiPage}」页 (index=$target)');
   }
 
   final bytes = await _capturePng(boundary);
