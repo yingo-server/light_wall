@@ -160,12 +160,12 @@ LightInfo computeLightInfo({
   if (sunAlt > -6) {
     final color = twilightColor(sunAlt);
     final scatter = ((0 - sunAlt) / 6.0).clamp(0.0, 1.0);
-    // 暮光漫射随太阳几何变化：日没瞬间还有残余天光，-6° 趋近 0。
-    // 旧实现硬编码 0.06·scatter —— scatter 本身已是线性插值，乘完
-    // 变成 0.06·线性，暮光初期（-0.1°）漫射≈0.001，墙面瞬间全黑，
-    // 日落过渡是"跳崖"而不是"渐暗"。改为：日没时接天光末尾值
-    // （≈skyIrradiance(1°)·0.5），随 |alt| 平滑衰减到 0。
-    final twiDiffuse = skyIrradiance(1.0) * 0.5 * (1.0 - scatter);
+    // 暮光漫射：日没瞬间衔接白天末尾（≈0.11），随 |alt| 平滑衰减，
+    // 但必须保留一个**非零底**（0.024）—— 民用暮光并非全黑，天顶虽暗、
+    // 地平线亮带仍在照明；且暮光必须始终比深夜更亮，否则会出现
+    // "日落比午夜还暗"的反物理（上一版衰减到 0.007 就踩了这个坑，
+    // 实测均值 10.7 < 夜空的 24.2）。
+    final twiDiffuse = 0.024 + 0.086 * (1.0 - scatter);
     return LightInfo(
       source: LightSource.twilight,
       sunAlt: sunAlt,

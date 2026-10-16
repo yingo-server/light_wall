@@ -61,6 +61,10 @@ jobs:
         working-directory: ${{ env.CORE }}
         run: dart test -r expanded --timeout 90s --concurrency 4
 
+      - name: 光照合理性回归（亮暗/过曝/暮光/确定性）
+        working-directory: ${{ env.CORE }}
+        run: dart run tools/light_diag.dart --json | tee "$GITHUB_WORKSPACE/light_diag.json"
+
       - name: AOT 编译命令行渲染器
         working-directory: ${{ env.CORE }}
         run: |
