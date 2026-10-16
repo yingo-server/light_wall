@@ -1,10 +1,21 @@
-# LightWall v1.2.0
+# LightWall v1.2.1
 
 **物理光照壁纸引擎** —— 把一面平光材质墙，每 3 分钟重新打一次真实窗光。
 
-> 本版是一次**物理总攻**：以四份专家审核（共 133 条）为准绳，逐一改正。
-> 凡"为画面好看"而设的常数，尽数删除；凡有物理替代者，尽数替换。
-> 文章见 [`docs/whitepaper.md`](docs/whitepaper.md)。
+> 本版修一处**可见的成像瑕疵**，并附**全天延时影片**（600 帧 · 2 fps · 毛体题字）。
+
+---
+
+## 本版修正
+
+| 修复前 | 修复后 |
+| --- | --- |
+| 环境光的"上暖下冷"以色带呈现，整幅通宽的水平台阶（实测 16 档） | 改为**解析几何占比**：窗在墙点高度以下的部分，随高度连续，台阶尽消 |
+
+**缘由**：旧实现以 $4\times4=16$ 个窗面样本统计"地平线上下占比"，颜色遂只有
+16 个离散档、档间硬边。新版以"过墙点的水平面把窗面分作上下两段"求其比例，
+$$g_s=\mathrm{clamp}\!\left(\frac{y_P-v_0}{v_1-v_0},0,1\right),$$
+连续无阶，且成本归零。
 
 ---
 
@@ -13,17 +24,17 @@
 | 文件 | 说明 |
 |---|---|
 | `LightWall-windows-x64.zip` | 桌面版（Flutter，x64） |
-| `LightWall-windows-arm64.zip` | 桌面版（Flutter，arm64） |
-| `lightwall_render-windows-x64.exe` | 命令行渲染器（纯 Dart AOT） |
-| `lightwall_render-windows-arm64.exe` | 命令行渲染器（arm64） |
-| `lightwall_render-linux-x64` | 命令行渲染器（Linux x64） |
-| `lightwall_render-linux-arm64` | 命令行渲染器（Linux arm64） |
+| `LightWall-windows-arm64.zip` | 桌面版（arm64，若 arm 运行器可用） |
+| `lightwall_render-{windows,linux}-{x64,arm64}` | 命令行渲染器（纯 Dart AOT） |
+| `lightwall_day.mp4` | **全天延时**：600 帧 · 2 fps · 约 300 秒 · 毛体题字 |
+| `contact_sheet.png` | 延时关键帧拼图 |
+| `SHA256SUMS.txt` | 校验和 |
 
 命令行版不倚 Flutter、不需 GPU：无图形之境亦可出图。
 
 ---
 
-## 本版修正（节选，皆用户可感）
+## 附录 · v1.2.0 物理修复（节选）
 
 | 修复前 | 修复后 |
 | --- | --- |
