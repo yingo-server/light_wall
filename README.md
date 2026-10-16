@@ -5,6 +5,7 @@
 > 光斑随季节、钟点、朝向自然流转，墙上叠着朱红题字（支持变量与倒计时）。
 
 ![platform](https://img.shields.io/badge/platform-Windows-0078D4)
+![release](https://img.shields.io/github/v/release/yingo-server/light_wall)
 ![flutter](https://img.shields.io/badge/Flutter-3.47%2B-02569B)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 

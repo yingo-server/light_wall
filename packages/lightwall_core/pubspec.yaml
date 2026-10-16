@@ -1,6 +1,6 @@
 name: lightwall_core
 description: LightWall 物理光照渲染核心（纯 Dart，无 Flutter 依赖）
-version: 1.0.0
+version: 1.1.0
 publish_to: none
 
 environment:

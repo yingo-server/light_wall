@@ -12,6 +12,9 @@ on:
       release:
         description: '是否发布 Release'
         default: 'false'
+      tag:
+        description: 'Release 版本号（如 v1.1.0）'
+        default: 'v1.1.0'
 
 permissions:
   contents: write
@@ -167,10 +170,13 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: LightWall v1.0.0
+          # 版本号由 dispatch 输入决定（默认 v1.1.0）—— 此前写死 v1.0.0，
+          # 发第二个版本会静默覆盖旧 Tag，是危险的默认值。
+          tag_name: ${{ github.event.inputs.tag || 'v1.1.0' }}
+          name: LightWall ${{ github.event.inputs.tag || 'v1.1.0' }}
           prerelease: false
           files: LightWall-windows-x64.zip
           body_path: release_notes.md
           fail_on_unmatched_files: false
-          overwrite_files: true
+          overwrite_files: false
+          draft: false
