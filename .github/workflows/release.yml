@@ -106,7 +106,7 @@ jobs:
         run: flutter analyze --no-fatal-infos
       - name: 构建 Windows（Release）
         working-directory: app
-        run: flutter build windows --release --target-platform windows-${{ matrix.arch }}
+        run: flutter build windows --release
       - name: 打包
         shell: pwsh
         run: |
@@ -127,7 +127,7 @@ jobs:
   publish:
     name: 发布 Release
     needs: [cli, desktop]
-    if: always() && (needs.cli.result == 'success')
+    if: always() && needs.cli.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h" // ReportStartupFailure（引擎/视图创建失败时的可见提示）
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
