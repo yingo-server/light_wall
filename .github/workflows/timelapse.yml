@@ -1,0 +1,176 @@
+name: Timelapse
+
+# 全天延时：以 N 帧均分 24 小时，渲染后按指定帧率合成视频。
+# 文字默认用【毛体】（Liu Jian Mao Cao，开源草书，近毛体）生成蒙版。
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: '帧数'
+        default: '600'
+      fps:
+        description: '合成帧率（帧/秒）'
+        default: '2'
+      size:
+        description: '帧尺寸 宽x高'
+        default: '640x360'
+      date:
+        description: '日期 YYYY-MM-DD'
+        default: '2025-12-21'
+      window:
+        description: '窗户朝向 east/west/south/north'
+        default: 'east'
+      text:
+        description: '墙面题字'
+        default: '千万不要忘记,阶级斗争！'
+      jobs:
+        description: '并行渲染进程数'
+        default: '4'
+
+permissions:
+  contents: read
+
+env:
+  CORE: packages/lightwall_core
+  FONT_URL: https://raw.githubusercontent.com/google/fonts/main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  timelapse:
+    name: 全天延时（${{ github.event.inputs.frames || '600' }} 帧）
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 ffmpeg / 中文字体 / Pillow
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk
+          python3 -m pip install --quiet --upgrade pip pillow
+
+      - name: 取【毛体】字体
+        run: |
+          curl -fsSL "$FONT_URL" -o "$RUNNER_TEMP/mao.ttf"
+          ls -la "$RUNNER_TEMP/mao.ttf"
+
+      - name: 构建渲染内核（AOT）
+        working-directory: ${{ env.CORE }}
+        run: |
+          dart pub get
+          dart analyze
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          dart compile exe bin/render.dart -o "$GITHUB_WORKSPACE/dist/render"
+
+      - name: 生成毛体题字蒙版
+        run: |
+          SIZE="${{ github.event.inputs.size || '640x360' }}"
+          W="${SIZE%x*}"; H="${SIZE#*x}"
+          python3 tools/make_text_mask.py \
+            --text "${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}" \
+            --out dist/mask.png --width "$W" --height "$H" \
+            --font-ratio 0.15 --ssaa 2 --font "$RUNNER_TEMP/mao.ttf"
+
+      - name: 全天延时渲染
+        run: |
+          python3 tools/timelapse.py \
+            --engine dist/render \
+            --bg assets/backgrounds/microcement.png \
+            --mask dist/mask.png \
+            --out-dir dist/timelapse \
+            --frames ${{ github.event.inputs.frames || '600' }} \
+            --size ${{ github.event.inputs.size || '640x360' }} \
+            --date ${{ github.event.inputs.date || '2025-12-21' }} \
+            --window ${{ github.event.inputs.window || 'east' }} \
+            --jobs ${{ github.event.inputs.jobs || '4' }} \
+            --text "${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}"
+
+      - name: 合成视频（${{ github.event.inputs.fps || '2' }} 帧/秒）
+        if: always()
+        run: |
+          FPS="${{ github.event.inputs.fps || '2' }}"
+          ffmpeg -y -framerate "$FPS" -i dist/timelapse/frames/f%04d.png \
+            -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+            -c:v libx264 -pix_fmt yuv420p -crf 18 -r 30 \
+            -movflags +faststart dist/timelapse/lightwall_day.mp4
+          ffprobe -v error -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 dist/timelapse/lightwall_day.mp4
+
+      - name: 关键帧拼图
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob
+          from PIL import Image
+          files = sorted(glob.glob("dist/timelapse/frames/f*.png"))
+          pick = files[::max(1, len(files)//12)][:12]
+          if pick:
+              ims = [Image.open(p).convert("RGB") for p in pick]
+              tw = 320
+              ims = [im.resize((tw, int(im.height*tw/im.width))) for im in ims]
+              cols, rows = 4, 3
+              ch = ims[0].height
+              canvas = Image.new("RGB", (cols*tw, rows*ch), (12,12,14))
+              for i, im in enumerate(ims[:cols*rows]):
+                  r, c = divmod(i, cols)
+                  canvas.paste(im, (c*tw, r*ch))
+              canvas.save("dist/timelapse/contact_sheet.png")
+              print("contact sheet", canvas.size)
+          PY
+
+      - name: 高清效果图（四时）
+        if: always()
+        run: |
+          mkdir -p dist/stills
+          D="dist/render"
+          for spec in "08:30 east" "12:30 south" "17:10 west" "22:30 east"; do
+            set -- $spec
+            t="$1"; win="$2"
+            "$D" --bg assets/backgrounds/microcement.png --text-alpha dist/mask.png \
+              --lat 39.9042 --lon 116.4074 --window "$win" \
+              --width 1280 --height 720 \
+              --time "${{ github.event.inputs.date || '2025-12-21' }}T${t}:00+08:00" \
+              --out "dist/stills/still_${win}_${t}.png" || true
+          done
+          ls -la dist/stills
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelapse-video
+          path: |
+            dist/timelapse/lightwall_day.mp4
+            dist/timelapse/contact_sheet.png
+            dist/timelapse/timeline.json
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timelapse-stills
+          path: dist/stills/
+          retention-days: 30
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## 全天延时"
+            echo "- 帧数：${{ github.event.inputs.frames || '600' }}"
+            echo "- 帧率：${{ github.event.inputs.fps || '2' }} fps（总时长约 $(( ${{ github.event.inputs.frames || '600' }} / ${{ github.event.inputs.fps || '2' }} )) 秒）"
+            echo "- 尺寸：${{ github.event.inputs.size || '640x360' }}"
+            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }} · 窗户：${{ github.event.inputs.window || 'east' }}"
+            echo "- 题字：${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}（毛体）"
+            echo ""
+            echo '```'
+            tail -20 dist/timelapse/timeline.tsv 2>/dev/null || echo "无时间线"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
