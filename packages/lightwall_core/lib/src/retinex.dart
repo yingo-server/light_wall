@@ -35,9 +35,16 @@ class RetinexResult {
 /// 工作尺寸上限（短边）。
 const int kRetinexWorkSize = 1024;
 
-/// 多尺度 Retinex 分解。
+/// 多尺度 Retinex 分解（**逐通道**）。
 ///
 /// [wallLin] 为线性光 RGB（w*h*3）。
+///
+/// 修正（报告 RE 系列）：
+///   · **逐通道**估计光照 S_c。光照是**有色**的（天光偏蓝、日落偏暖），只除以
+///     一个标量亮度会把底图的平光色偏当材质色、重打光后色偏被"平方"（RE-10）。
+///   · 去掉了"把反射率均值重标定回原图均值"（RE-4）：那会抹掉 albedo 的绝对
+///     量纲，使 ρ 与照度不可分离。R_c = I_c/S_c 直接作为反射率。
+///   · ρ 按能量守恒钳到 [0,1]（RE-5 的平顶问题在逐通道+不重标定后大幅缓解）。
 RetinexResult decomposeAlbedo(Float32List wallLin, int w, int h,
     {int maxWork = kRetinexWorkSize}) {
   final n = w * h;
@@ -47,80 +54,62 @@ RetinexResult decomposeAlbedo(Float32List wallLin, int w, int h,
   final wh = math.max(64, (h * scale).round());
   final downscaled = ww != w || wh != h;
 
-  // 亮度（工作尺寸）
-  final graySrc = Float32List(n);
-  for (var i = 0; i < n; i++) {
-    graySrc[i] = 0.2126 * wallLin[i * 3] +
-        0.7152 * wallLin[i * 3 + 1] +
-        0.0722 * wallLin[i * 3 + 2];
-  }
-  final grayWork = downscaled ? resizeGray(graySrc, w, h, ww, wh) : graySrc;
+  // 多尺度：更小的尺度（更细）权重更高 —— 低频是光照本体、细节归反射率。
+  const scales = <double>[0.08, 0.20, 0.40, 0.65];
+  const wts = <double>[0.12, 0.20, 0.28, 0.40];
 
-  // log(I)
-  final logGray = Float32List(ww * wh);
-  for (var i = 0; i < ww * wh; i++) {
-    logGray[i] = math.log(math.max(grayWork[i], 1e-6));
-  }
-
-  // 多尺度光照估计
-  const scales = <double>[0.15, 0.35, 0.60];
-  const weights = <double>[0.20, 0.30, 0.50];
-  final logS = Float32List(ww * wh);
-  for (var s = 0; s < scales.length; s++) {
-    final radius = math.max(2.0, math.min(ww, wh) * scales[s]);
-    final blurred = blurGray(logGray, ww, wh, radius);
+  final albedo = Float32List(n * 3);
+  final sLum = Float32List(n);
+  for (var c = 0; c < 3; c++) {
+    final chan = Float32List(n);
+    for (var i = 0; i < n; i++) {
+      chan[i] = wallLin[i * 3 + c];
+    }
+    final work = downscaled ? resizeGray(chan, w, h, ww, wh) : chan;
+    final logC = Float32List(ww * wh);
     for (var i = 0; i < ww * wh; i++) {
-      logS[i] += weights[s] * blurred[i];
+      logC[i] = math.log(math.max(work[i], 1e-6));
+    }
+    final logS = Float32List(ww * wh);
+    for (var s = 0; s < scales.length; s++) {
+      final radius = math.max(2.0, math.min(ww, wh) * scales[s]);
+      final blurred = blurGray(logC, ww, wh, radius);
+      for (var i = 0; i < ww * wh; i++) {
+        logS[i] += wts[s] * blurred[i];
+      }
+    }
+    final sWork = Float32List(ww * wh);
+    for (var i = 0; i < ww * wh; i++) {
+      sWork[i] = math.exp(logS[i]);
+    }
+    final sCh = downscaled ? resizeGray(sWork, ww, wh, w, h) : sWork;
+    final wc = switch (c) {
+      0 => 0.2126,
+      1 => 0.7152,
+      _ => 0.0722,
+    };
+    for (var i = 0; i < n; i++) {
+      final s = math.max(sCh[i], 1e-6);
+      albedo[i * 3 + c] = (wallLin[i * 3 + c] / s).clamp(0.0, 1.0);
+      sLum[i] += wc * sCh[i];
     }
   }
 
-  // S 上采样回原尺寸
-  final sWork = Float32List(ww * wh);
-  for (var i = 0; i < ww * wh; i++) {
-    sWork[i] = math.exp(logS[i]);
-  }
-  final sGray = downscaled ? resizeGray(sWork, ww, wh, w, h) : sWork;
-
-  // R = I / S（原始分辨率）
-  final r = Float32List(n * 3);
-  var targetMean = 0.0;
-  for (var i = 0; i < n; i++) {
-    targetMean +=
-        (wallLin[i * 3] + wallLin[i * 3 + 1] + wallLin[i * 3 + 2]) / 3.0;
-  }
-  targetMean /= math.max(1, n);
-  var curMean = 0.0;
-  for (var i = 0; i < n; i++) {
-    final s = math.max(sGray[i], 1e-6);
-    for (var c = 0; c < 3; c++) {
-      r[i * 3 + c] = wallLin[i * 3 + c] / s;
-    }
-    curMean += (r[i * 3] + r[i * 3 + 1] + r[i * 3 + 2]) / 3.0;
-  }
-  curMean /= math.max(1, n);
-  if (curMean > 1e-6) {
-    final k = targetMean / curMean;
-    for (var i = 0; i < n * 3; i++) {
-      r[i] = (r[i] * k).clamp(0.001, 1.0);
-    }
-  } else {
-    for (var i = 0; i < n * 3; i++) {
-      r[i] = r[i].clamp(0.001, 1.0);
-    }
-  }
-
-  // 异常检测（底图自带光斑/阴影时，把它们从反射率里抹掉）
-  final baseline = blurGray(sGray, w, h, math.max(11.0, math.min(w, h) * 0.05));
+  // 异常检测（底图自带光斑/阴影时，把它们从反射率里抹平）—— 作用在**光照
+  // 亮度**上，阈值两侧对称（旧实现 dev>0.15 / dev<−0.20 不对称是手挑的）。
+  final baseline =
+      blurGray(sLum, w, h, math.max(11.0, math.min(w, h) * 0.05));
   var brightCount = 0;
   var darkCount = 0;
   final brightMask = Uint8List(n);
   final darkMask = Uint8List(n);
+  const devThresh = 0.18; // 同一阈值两侧对称
   for (var i = 0; i < n; i++) {
-    final dev = sGray[i] - baseline[i];
-    if (dev > 0.15) {
+    final dev = sLum[i] - baseline[i];
+    if (dev > devThresh) {
       brightMask[i] = 1;
       brightCount++;
-    } else if (dev < -0.20) {
+    } else if (dev < -devThresh) {
       darkMask[i] = 1;
       darkCount++;
     }
@@ -128,18 +117,16 @@ RetinexResult decomposeAlbedo(Float32List wallLin, int w, int h,
   final brightRatio = brightCount / math.max(1, n);
   final darkRatio = darkCount / math.max(1, n);
 
-  // 用低频背景填充异常区（参考实现用中值滤波，这里用大半径模糊：
-  // 目的只是"抹平"，模糊的结果在视觉上等价且快得多）
   if (brightRatio > 0 && brightRatio < 0.30) {
-    _inpaint(r, n, w, h, brightMask, math.max(11.0, math.min(w, h) * 0.05));
+    _inpaint(albedo, n, w, h, brightMask, math.max(11.0, math.min(w, h) * 0.05));
   }
   if (darkRatio > 0 && darkRatio < 0.30) {
-    _inpaint(r, n, w, h, darkMask, math.max(11.0, math.min(w, h) * 0.05));
+    _inpaint(albedo, n, w, h, darkMask, math.max(11.0, math.min(w, h) * 0.05));
   }
 
   return RetinexResult(
-    albedo: r,
-    shading: sGray,
+    albedo: albedo,
+    shading: sLum,
     brightRatio: brightRatio,
     darkRatio: darkRatio,
   );

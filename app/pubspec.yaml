@@ -1,7 +1,7 @@
 name: light_wall
 description: "LightWall 光墙 —— Windows 物理光照壁纸引擎：每 3 分钟重打一次窗光并设为壁纸"
 publish_to: none
-version: 1.1.0+1100
+version: 1.2.0+1200
 
 environment:
   sdk: ^3.9.0

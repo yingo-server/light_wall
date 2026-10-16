@@ -10,6 +10,7 @@
 // 本项目**禁用天气系统**：只有晴天一种状态，故云量恒为 0、能见度取 20km。
 // 这样云/降水/雾霾相关的分支全部退化为常量，代码路径更短、更可预测。
 import 'dart:math' as math;
+import 'spectrum.dart';
 
 const double kDeg = math.pi / 180.0;
 
@@ -73,7 +74,9 @@ BodyPosition sunPosition(double lat, double lon, DateTime dt) {
           math.cos(delta) * math.sin(phi) * math.cos(h));
   var azDeg = az / kDeg % 360.0;
   if (azDeg < 0) azDeg += 360.0;
-  return BodyPosition(azDeg, alt / kDeg);
+  // 返回**视高度角**（几何高度 + 大气折射）—— airMass 的输入定义为视高度角，
+  // 场景太阳方向也必须用它，否则低太阳角会系统性错位。
+  return BodyPosition(azDeg, apparentAltitudeDeg(alt / kDeg));
 }
 
 /// 太阳赤纬与时角（用于日出日落计算）。
@@ -106,28 +109,34 @@ double alphaDeg(double lambda, double eps, double delta) {
   return deg;
 }
 
-/// 日出/日落（当地钟表时间，简单由经度与均时差推出）。
-///
-/// 返回 (rise, set)，极昼/极夜时对应值为 null。
+/// 日出/日落，返回 **UTC** 时刻（旧实现文档写"当地钟表时间"却返回 UTC，
+/// 而且拿本地日历日的年月日去构造 UTC 正午 —— 在经度与时区错配的站点会取到
+/// 错误的赤纬、甚至整体错一天）。这里以给定时刻的 **UTC 日历日** 为基准，
+/// 并用 Meeus 第 15 章的迭代法（用事件时刻的赤纬回代一步）提高精度。
+/// 极昼/极夜时 rise/set 均为 null（由 |cosH| 判定，调用方需自行区分）。
 ({DateTime? rise, DateTime? set}) sunRiseSet(
     double lat, double lon, DateTime dayLocal) {
-  final utcNoon = DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day, 12);
-  final decl = _solarDecl(utcNoon);
+  final u = dayLocal.toUtc();
+  final base = DateTime.utc(u.year, u.month, u.day);
   final phi = lat * kDeg;
-  final cosH =
-      (math.sin(-0.833 * kDeg) - math.sin(phi) * math.sin(decl.declination)) /
-          (math.cos(phi) * math.cos(decl.declination));
-  if (cosH > 1.0) return (rise: null, set: null); // 极夜
-  if (cosH < -1.0) return (rise: null, set: null); // 极昼
-  final hDeg = math.acos(cosH) / kDeg;
-  final solarNoonUtcHours = 12.0 - lon / 15.0 - decl.eot;
-  final riseUtc = solarNoonUtcHours - hDeg / 15.0;
-  final setUtc = solarNoonUtcHours + hDeg / 15.0;
-  final base = DateTime.utc(dayLocal.year, dayLocal.month, dayLocal.day);
-  return (
-    rise: base.add(Duration(milliseconds: (riseUtc * 3600000).round())),
-    set: base.add(Duration(milliseconds: (setUtc * 3600000).round())),
-  );
+  final sinAlt0 = math.sin(-0.833 * kDeg); // 上缘 + 折射的标准日出高度
+  var decl = _solarDecl(base.add(const Duration(hours: 12))).declination;
+  DateTime? rise;
+  DateTime? set;
+  for (var iter = 0; iter < 3; iter++) {
+    final cosH = (sinAlt0 - math.sin(phi) * math.sin(decl)) /
+        (math.cos(phi) * math.cos(decl));
+    if (cosH > 1.0 || cosH < -1.0) return (rise: null, set: null); // 极夜/极昼
+    final hDeg = math.acos(cosH) / kDeg;
+    final noon = _solarDecl(base.add(const Duration(hours: 12)));
+    final noonH = 12.0 - lon / 15.0 - noon.eot;
+    final riseH = noonH - hDeg / 15.0;
+    final setH = noonH + hDeg / 15.0;
+    rise = base.add(Duration(milliseconds: (riseH * 3600000).round()));
+    set = base.add(Duration(milliseconds: (setH * 3600000).round()));
+    decl = _solarDecl(rise.add(const Duration(hours: 6))).declination;
+  }
+  return (rise: rise, set: set);
 }
 
 /// 太阳正午（UTC）。
@@ -154,53 +163,88 @@ double dayLengthHours(double lat, DateTime dayLocal) {
 
 // ───────────────────────────── 月亮 ─────────────────────────────
 
-/// 月亮位置（低精度简化模型）。
+/// 月亮位置 —— Meeus《Astronomical Algorithms》第 47 章的**主摄动项**级数。
+///
+/// 旧实现只解"无摄动开普勒方程"，漏掉出差(evection ±1.27°)、二均差
+/// (variation 0.66°)、周年差、黄纬交角归算等周期项，误差可达 1~2°；
+/// 经大气质量放大后月光亮度差近 2 倍、光斑方位偏 1~2°。这里改用黄经/黄纬/
+/// 地心距离的周期改正级数（Meeus 表 47.A 主要项，精度 ~0.05°），并补上两件
+/// 被漏掉的几何：
+///   · **地平视差**（地心 → 站心，最大 0.95°，比月面直径还大）；
+///   · 大气折射（返回视高度角）。
 BodyPosition moonPosition(double lat, double lon, DateTime dt) {
   final utc = dt.toUtc();
   final jd = julianDay(utc);
-  final n = jd - 2451545.0;
+  final T = (jd - 2451545.0) / 36525.0;
 
-  final nNode = (125.1228 - 0.0529538083 * n) * kDeg;
-  const inc = 5.1454 * kDeg;
-  final per = (318.0634 + 0.1643573223 * n) * kDeg;
-  final maj = 60.2666; // 地球半径
-  final ecc = 0.054900;
-  final mAnom = ((115.3654 + 13.0649929509 * n) % 360.0) * kDeg;
+  // 基本角（度）：平黄经 l'、平距角 D、太阳平近点角 M、月亮平近点角 M'、纬度参数 F
+  final lp = 218.3164477 + 481267.88123421 * T;
+  final dAng = 297.8501921 + 445267.1114034 * T;
+  final mAng = 357.5291092 + 35999.0502909 * T;
+  final mpAng = 134.9633964 + 477198.8675055 * T;
+  final fAng = 93.2720950 + 483202.0175233 * T;
+  final d = dAng * kDeg, m = mAng * kDeg, mp = mpAng * kDeg, f = fAng * kDeg;
 
-  // 求解偏近点角
-  var e = mAnom;
-  for (var i = 0; i < 5; i++) {
-    e = e - (e - ecc * math.sin(e) - mAnom) / (1 - ecc * math.cos(e));
-  }
-  final xv = maj * (math.cos(e) - ecc);
-  final yv = maj * math.sqrt(1 - ecc * ecc) * math.sin(e);
-  final v = math.atan2(yv, xv);
-  final r = math.sqrt(xv * xv + yv * yv);
+  // 黄经改正 Σl（度）—— Meeus 表 47.A 主要项
+  final sumL = 6.288774 * math.sin(mp) +
+      1.274027 * math.sin(2 * d - mp) +
+      0.658314 * math.sin(2 * d) +
+      0.213618 * math.sin(2 * mp) -
+      0.185116 * math.sin(m) -
+      0.114332 * math.sin(2 * f) +
+      0.058793 * math.sin(2 * d - 2 * mp) +
+      0.057066 * math.sin(2 * d - m - mp) +
+      0.053322 * math.sin(2 * d + mp) +
+      0.045758 * math.sin(2 * d - m) -
+      0.040923 * math.sin(m - mp) -
+      0.034720 * math.sin(d) -
+      0.030383 * math.sin(m + mp) +
+      0.015327 * math.sin(2 * d - 2 * f) -
+      0.012528 * math.sin(mp + 2 * f) +
+      0.010980 * math.sin(mp - 2 * f);
+  // 黄纬改正 Σb（度）
+  final sumB = 5.128122 * math.sin(f) +
+      0.280602 * math.sin(mp + f) +
+      0.277693 * math.sin(mp - f) +
+      0.173237 * math.sin(2 * d - f) +
+      0.055413 * math.sin(2 * d - mp + f) +
+      0.046271 * math.sin(2 * d - mp - f) +
+      0.032573 * math.sin(2 * d + f) +
+      0.017198 * math.sin(2 * mp + f) +
+      0.009266 * math.sin(2 * d + mp - f) +
+      0.008822 * math.sin(2 * mp - f) +
+      0.008216 * math.sin(2 * d - m - f) +
+      0.004324 * math.sin(2 * d - 2 * mp - f) +
+      0.004200 * math.sin(2 * d - m + f);
+  // 地心距离（km）—— Meeus 表 47.A 主要项
+  final rKm = 385000.56 -
+      20905.355 * math.cos(mp) -
+      3699.111 * math.cos(2 * d - mp) -
+      2955.968 * math.cos(2 * d) -
+      569.925 * math.cos(2 * mp) +
+      246.158 * math.cos(2 * d - 2 * mp) -
+      170.733 * math.cos(2 * d + mp) -
+      204.586 * math.cos(2 * d - m) -
+      152.138 * math.cos(2 * d - m - mp) -
+      129.620 * math.cos(m) +
+      108.743 * math.cos(d) +
+      104.755 * math.cos(m + mp);
 
-  // 黄道坐标
-  final xh = r *
-      (math.cos(nNode) * math.cos(v + per) -
-          math.sin(nNode) * math.sin(v + per) * math.cos(inc));
-  final yh = r *
-      (math.sin(nNode) * math.cos(v + per) +
-          math.cos(nNode) * math.sin(v + per) * math.cos(inc));
-  final zh = r * (math.sin(v + per) * math.sin(inc));
-
-  final lonEcl = math.atan2(yh, xh);
-  final latEcl = math.atan2(zh, math.sqrt(xh * xh + yh * yh));
+  final lonEcl = (lp + sumL) * kDeg;
+  final latEcl = sumB * kDeg;
 
   // 黄道 → 赤道
-  const obliq = 23.4393 * kDeg;
+  const obliq = 23.4392911 * kDeg;
   final xe = math.cos(latEcl) * math.cos(lonEcl);
   final ye = math.cos(obliq) * math.cos(latEcl) * math.sin(lonEcl) -
       math.sin(obliq) * math.sin(latEcl);
   final ze = math.sin(obliq) * math.cos(latEcl) * math.sin(lonEcl) +
       math.cos(obliq) * math.sin(latEcl);
-
   final ra = math.atan2(ye, xe);
   final dec = math.atan2(ze, math.sqrt(xe * xe + ye * ye));
 
   // 时角
+  final n = jd - 2451545.0;
   final hh = utc.hour + utc.minute / 60.0 + utc.second / 3600.0;
   final gmst = (6.697375 + 0.0657098242 * n + hh) % 24.0;
   final lmst = (gmst * 15.0 + lon) * kDeg;
@@ -215,246 +259,290 @@ BodyPosition moonPosition(double lat, double lon, DateTime dt) {
           math.cos(dec) * math.sin(phi) * math.cos(h));
   var azDeg = az / kDeg % 360.0;
   if (azDeg < 0) azDeg += 360.0;
-  return BodyPosition(azDeg, alt / kDeg);
+
+  // 地平视差（地心 → 站心）：sin π = R_earth/r，最大 0.95°。
+  final rEarth = rKm / 6378.14; // 以地球赤道半径为单位
+  final par = math.asin((1.0 / rEarth).clamp(0.0, 1.0));
+  final altTopo = alt - par * math.cos(alt);
+  return BodyPosition(azDeg, apparentAltitudeDeg(altTopo / kDeg));
 }
 
-/// 月相（0=新月，0.5=满月）。
+/// 月相（0=新月，0.5=满月）—— 由**日月黄经差**（真实几何）给出，
+/// 而不是用平朔望月近似推（受摄动影响可达 ±0.3~0.6 天）。
 double moonPhase(DateTime dtUtc) {
-  const synodic = 29.530588853;
-  // 参考新月：2000-01-06 18:14 UTC
-  final ref = DateTime.utc(2000, 1, 6, 18, 14);
-  final days = dtUtc.toUtc().difference(ref).inMilliseconds / 86400000.0;
-  var phase = (days / synodic) % 1.0;
-  if (phase < 0) phase += 1.0;
-  return phase;
+  final utc = dtUtc.toUtc();
+  final jd = julianDay(utc);
+  final T = (jd - 2451545.0) / 36525.0;
+  // 月亮黄经（[moonPosition] 级数的主要项）
+  final lp = 218.3164477 + 481267.88123421 * T;
+  final dAng = 297.8501921 + 445267.1114034 * T;
+  final mpAng = 134.9633964 + 477198.8675055 * T;
+  final d = dAng * kDeg, mp = mpAng * kDeg;
+  final sumL = 6.288774 * math.sin(mp) +
+      1.274027 * math.sin(2 * d - mp) +
+      0.658314 * math.sin(2 * d) +
+      0.213618 * math.sin(2 * mp);
+  final lonMoon = lp + sumL;
+  // 太阳黄经（与 sunPosition 同一低精度式）
+  final l = (280.460 + 0.9856474 * (jd - 2451545.0)) % 360.0;
+  final g = ((357.528 + 0.9856003 * (jd - 2451545.0)) % 360.0) * kDeg;
+  final lonSun = l + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g);
+  var elong = (lonMoon - lonSun) % 360.0;
+  if (elong < 0) elong += 360.0;
+  return elong / 360.0;
 }
 
-/// 月相亮度因子（0=新月不可见，1=满月最亮）。
-double moonBrightnessFactor(double phase) =>
-    (1.0 - math.cos(2 * math.pi * phase)) / 2.0;
+/// 月相亮度因子（0=新月不可见，1=满月）。
+///
+/// 用**光照几何 + 月面相位函数**，而不是把相位线性当亮度：月面亮度随相角
+/// 的下降比照亮面积更快（冲日效应）。相角 α 的星等亏损用 Allen 的经验式
+/// Δm = 0.026·|α| + 4×10⁻⁹·α⁴（α 单位度），再乘照亮面积比 (1+cosα)/2。
+double moonBrightnessFactor(double phase) {
+  final alpha = (1.0 - 2.0 * phase).abs() * 180.0; // 相角（度）
+  final frac = (1.0 + math.cos(alpha * kDeg)) / 2.0; // 照亮面积比
+  final dm = 0.026 * alpha + 4e-9 * alpha * alpha * alpha * alpha;
+  return (frac * math.pow(10.0, -0.4 * dm).toDouble()).clamp(0.0, 1.0);
+}
 
 // ─────────────────────────── 大气物理 ───────────────────────────
 
-/// Kasten-Young 大气质量。
+/// 相对大气质量 m(h)：Young (1994) 的解析式。
+///
+/// Young, A. T. (1994), Applied Optics 33(6)：该有理式在天顶归一为 1、
+/// 在地平线附近保持有限值，且**在地平线上下连续**。旧实现用 Kasten-Young
+/// 并在 h≤0 处硬返回 40.0、h 较大处再钳到 40：地平线两侧的光学厚度从
+/// 37.9 跳到 40，且钳制使地平线以下任何高度角的透过率都相同（直射亮度被
+/// "冻结"，在暮光/日出处叠加一个人为台阶）。
+///
+/// 自检：m(90°)=1.0000、m(30°)=1.9917、m(0°)=31.7、m(−1°)=58.6。
 double airMassKastenYoung(double altDeg) {
-  if (altDeg <= 0) return 40.0;
-  final a = altDeg > 90 ? 90.0 : altDeg;
+  final a = altDeg > 90.0 ? 90.0 : altDeg;
   final s = math.sin(a * kDeg);
-  final am = 1.0 / (s + 0.50572 * math.pow(a + 6.07995, -1.6364).toDouble());
-  return am > 40.0 ? 40.0 : am;
+  final s2 = s * s;
+  final num = 1.002432 * s2 + 0.148386 * s + 0.0096467;
+  final den = s2 * s + 0.149864 * s2 + 0.0102963 * s + 0.000303978;
+  return num / math.max(den, 1e-9);
 }
 
-/// Mie 光学厚度（仅气溶胶，晴天取 0.05）。
-double mieTau([double visM = 20000.0]) {
-  var tau = 0.05;
-  final vis = visM < 200.0 ? 200.0 : visM;
-  final ratio = (vis / 20000.0).clamp(0.02, 1.0);
-  tau += -math.log(ratio) * 0.15;
-  return tau;
+/// 大气折射抬升（度）—— Saemundsson (1986)：
+///   R(弧分) = 1 / tan( h + 7.31/(h + 4.4) )，h 为几何高度角（度）。
+/// 标准大气（1010 hPa / 10 °C）下：地平线 34.5′（0.575°）、5° 处 0.165°、
+/// 10° 处 0.090°、45° 处 0.017°。地平线的 0.575° 比日轮本身（0.53°）还大，
+/// 即忽略折射时低太阳角的位置与时刻都会明显错位（光斑偏几厘米、光斑进出
+/// 观察墙的时刻偏数分钟）。
+double atmosphericRefractionDeg(double geoAltDeg) {
+  if (geoAltDeg > 89.0) return 0.0;
+  final h = geoAltDeg < -1.5 ? -1.5 : geoAltDeg;
+  final arg = (h + 7.31 / (h + 4.4)) * kDeg;
+  final arcMin = 1.0 / math.tan(arg);
+  return (arcMin / 60.0).clamp(0.0, 0.7);
 }
 
-/// 分波长太阳辐照度（RGB，天顶归一化为 1）。
+/// 几何高度角 → **视高度角**（含大气折射）。
+///
+/// 地平线以下 2° 之外不再施加（折射式在那里失去物理意义，且此时直射光束
+/// 本就不存在）。airMass 的输入定义为视高度角，场景太阳方向也必须用它。
+double apparentAltitudeDeg(double geoAltDeg) {
+  if (geoAltDeg < -2.0) return geoAltDeg;
+  return geoAltDeg + atmosphericRefractionDeg(geoAltDeg);
+}
+
+/// 气溶胶光学厚度（550 nm）—— 由能见度经 Koschmieder 关系反解。
+///
+///   τ_ext(550) = 3.912 / V(km)
+///   AOD550 = τ_ext − τ_R(550) − τ_O₃(550)
+///
+/// 这样"能见度"这个物理量真正进入计算，而不是像早期实现那样
+/// 给一个写死的灰 τ=0.05（且那条能见度分支永远不生效 = 死代码）。
+double aod550FromVisibility(double visM) {
+  final vis = visM < 200 ? 200.0 : visM;
+  final tauExt = 3.912 / (vis / 1000.0);
+  final tauR = rayleighTau(550.0);
+  final tauO3 = ozoneTau(550.0);
+  return math.max(0.001, tauExt - tauR - tauO3);
+}
+
+/// 分波长太阳辐照度（线性 sRGB，天顶辐亮度归一化为 1）。
+///
+/// 由**真实光谱积分**得到：普朗克光谱 × 分波长大气透过率 × CIE 1931 CMF。
+/// 详见 spectrum.dart 的说明 —— 早期实现用"高度角→色温→黑体→RGB"的
+/// 拟合旁路，既丢掉了本文件算出的分波长透过率，又把 gamma 编码的显示值
+/// 当作线性光使用。
 List<double> solarIrradianceRgb(double altDeg, [double visM = 20000.0]) {
-  if (altDeg < -18) return <double>[0, 0, 0];
   if (altDeg < 0) {
-    double base;
-    if (altDeg > -6) {
-      base = 0.018 * (1 + altDeg / 6);
-    } else if (altDeg > -12) {
-      base = 0.004 * (1 + (altDeg + 6) / 6);
-    } else {
-      base = 0.0008 * (1 + (altDeg + 12) / 6);
-    }
-    return <double>[base, base * 0.45, base * 0.20];
+    // 地平线以下：直射为 0（暮光散射光由 skyIrradiance / twilight 分支负责）
+    return <double>[0, 0, 0];
   }
+  return solarSpectrum(altDeg, aod550: aod550FromVisibility(visM)).rgb;
+}
 
-  final am = airMassKastenYoung(altDeg);
-  const tauR550 = 0.098;
-  double rayleigh(double wl) =>
-      tauR550 * math.pow(wl / 550.0, -4.08).toDouble();
+/// 太阳直射的相对亮度（天顶 = 1）。
+double solarIrradiance(double altDeg, [double visM = 20000.0]) {
+  if (altDeg < 0) return 0.0;
+  return solarSpectrum(altDeg, aod550: aod550FromVisibility(visM)).luminance;
+}
 
-  final tauM = mieTau(visM);
-  // 臭氧 Chappuis 带吸收（500~700 nm，峰值 ~600 nm）：低太阳角（am 大）
-  // 时臭氧路径拉长，直射进一步偏暖 —— 这是"夕阳红"在 Rayleigh 之外的
-  // 第二个物理来源，参考实现也没有，低角度渲染的暖度会系统性不足。
-  const tauO3 = 0.03; // 垂直大气臭氧光学厚度 @600nm（教科书常数）
-  var tr = math.exp(-(rayleigh(650.0) + tauM + tauO3 * 0.95) * am);
-  var tg = math.exp(-(rayleigh(550.0) + tauM + tauO3 * 0.65) * am);
-  var tb = math.exp(-(rayleigh(450.0) + tauM) * am);
-
-  if (altDeg < 8.0) {
-    final extra = (8.0 - altDeg) / 8.0 * 0.5;
-    tb *= math.exp(-extra * am * 0.7);
-    tg *= math.exp(-extra * am * 0.4);
-  }
+/// 太阳直射的**色度**（线性 RGB，亮度归一化为 1）。
+///
+/// 与 [solarIrradiance] 相乘即还原出绝对光谱辐照度：
+///     E_rgb = luminance × chroma
+/// 日落偏红完全来自大气透过率，不再有色温表。
+///
+/// 极低太阳角（alt ≲ 2°）时色度会**超出 sRGB 色域**（线性 B 分量变负）——
+/// 这是真实的：sRGB 原色三角形装不下日出/日落那样的高饱和红橙。
+/// 这里裁到 0（丢失一点色相精度，但 sRGB 本来就表达不了）；
+/// 若将来换用宽色域输出，应改为色域映射而不是裁剪。
+List<double> sunColorFromAltitude(double altDeg) {
+  if (altDeg < 0) return <double>[1, 1, 1];
+  final s = solarSpectrum(altDeg);
+  if (s.luminance <= 1e-12) return <double>[1, 1, 1];
   return <double>[
-    tr.clamp(0.0, 1.0),
-    tg.clamp(0.0, 1.0),
-    tb.clamp(0.0, 1.0),
+    math.max(0.0, s.rgb[0] / s.luminance),
+    math.max(0.0, s.rgb[1] / s.luminance),
+    math.max(0.0, s.rgb[2] / s.luminance),
   ];
 }
 
-/// 太阳辐照度标量（取 G 通道）。
-double solarIrradiance(double altDeg, [double visM = 20000.0]) =>
-    solarIrradianceRgb(altDeg, visM)[1];
-
-/// 天光（天空漫射）辐照度，晴天。
+/// 天光（天空漫射）水平照度，晴天。量纲：天顶直射法向照度 = 1。
+///
+/// 物理：晴天漫射水平照度与直射水平照度之比随太阳高度下降而升高（太阳越低、
+/// 直射光程越长，散射占比越大），晴天实测在 0.10（高日）~0.16（近地平）
+/// 之间（Iqbal 1983 一类晴天散射比量级）。用这条**有界的物理比值**取代旧的
+/// "0.22·sin^0.6"经验幂律 —— 后者在 h→0 处把漫射强行压到 0，与暮光分支
+/// 之间留下一帧级跳变（日落前一秒几乎全黑、下一秒环境光凭空出现）。
+/// 天光（天空漫射）水平照度，晴天。量纲：晴天正午全局照度 ≈ 1。
+///
+/// 晴天漫射水平照度对太阳高度角的依赖很弱：地平线处仍约为天顶的一半
+/// （日落时整个天空穹顶仍被照亮，全球照度主要由漫射贡献），因此**不能**写成
+/// `0.22·sin^0.6` 这种在 h→0 处趋于 0 的幂律 —— 那会在日落瞬间把漫射压到 0，
+/// 与暮光分支之间留下一帧级跳变。取晴天实测值：天顶 ≈ 0.11、地平线 ≈ 0.05
+/// （相对正午全局照度，Iqbal 1983 一类晴天散射量级）。
 double skyIrradiance(double sunAlt) {
   if (sunAlt <= 0) return 0.0;
-  const skyMax = 0.22;
-  return skyMax * math.pow(math.sin(sunAlt * kDeg), 0.60).toDouble();
+  return 0.05 + 0.06 * math.sin(sunAlt * kDeg).clamp(0.0, 1.0);
 }
 
-/// 夜空照明：城市辉光/星光 + 月光散射。
-double nightSkyIrradiance(double moonAlt, double phase) {
-  const c = 0.0; // 晴空无云
-  final skyglow = 0.008 * (1.0 - 0.55 * c);
+/// 暮光漫射水平照度（相对正午全局 ≈ 1）。
+///
+/// 太阳落到地平线下时，天空漫射由仍被照亮的高层大气提供，随下沉角近似指数
+/// 衰减（实测民用暮光 0~6° 约下降两个数量级，即每 ~3° 约一个数量级），且必须
+/// 在 h=0 处与 [skyIrradiance] **连续**。深夜自然夜空（气辉+星光）比民用暮光
+/// 尽头还暗约 4 个数量级，属观察者/相机模型范畴（见待决策）。
+double twilightDiffuse(double sunAlt) {
+  if (sunAlt > 0) return skyIrradiance(sunAlt);
+  return 0.05 * math.pow(10.0, sunAlt / 3.0).toDouble();
+}
+
+/// 满月天顶的相对月光照度（工程夜间量纲；见 [moonIrradiance]）。
+const double kMoonZenithRel = 0.20;
+
+/// 月光法向照度。量纲同太阳。
+///
+/// 月光就是被同一层大气衰减、被月面反射的太阳光，因此角依赖必须用与太阳
+/// **同一套**分波长光学厚度（直接复用 [solarIrradiance]，它已含 airmass
+/// 消光并归一化到天顶 = 1），而不是换一个灰度消光系数 0.20；低月角处也不再
+/// 硬切（旧实现 moonAlt < 5° 直接返回 0 → 月光斑"啪"地出现）。
+///
+/// 绝对量级：月光与太阳的真实照度比约 2.5×10⁻⁶（满月 0.25 lx / 太阳
+/// 1×10⁵ lx）；本管线的绝对量级由自动曝光负责，故此处保留"满月天顶 ≈ 0.20"
+/// 的夜间相对标定，真实绝对比值需相机模型才能落地（见待决策）。
+double moonIrradiance(double moonAlt, double phase) {
+  if (moonAlt <= 0) return 0.0;
+  final trans = solarIrradiance(moonAlt); // 与太阳相同的空气消光，天顶 = 1
+  return kMoonZenithRel * moonBrightnessFactor(phase) * trans;
+}
+
+/// 夜空照明（无月自然夜空：气辉 + 星光；可选城市人工辉光）＋ 月光散射。
+///
+/// 无月部分的**亮度底**取民用暮光尽头（h = −6°）的漫射照度，从而与
+/// [twilightDiffuse] 在 −6° 处连续（不出现"暮光结束瞬间跳暗"的台阶）；
+/// 城市人工辉光（Walker 定律的亮度增量）作为**站点参数** [cityGlow] 暴露，
+/// 默认 0（自然夜空）。月光的散射分量按其漫射比（晴天 ≈ 0.10）从
+/// [moonIrradiance] 推出，而不是再给一个独立常数。
+double nightSkyIrradiance(double moonAlt, double phase,
+    {double cityGlow = 0.0}) {
+  final natural = twilightDiffuse(-6.0);
   var moonAmb = 0.0;
   if (moonAlt > 0) {
-    final m = moonBrightnessFactor(phase);
-    final altN = math.pow((moonAlt / 60.0).clamp(0.0, 1.0), 0.7).toDouble();
-    moonAmb = 0.035 * m * altN * (1.0 - 0.60 * c);
+    moonAmb = moonIrradiance(moonAlt, phase) * 0.10;
   }
-  return skyglow + moonAmb;
+  return natural * (1.0 + math.max(0.0, cityGlow)) + moonAmb;
 }
 
-/// 月光辐照度（视觉校正）。
-double moonIrradiance(double moonAlt, double phase) {
-  if (moonAlt < 5) return 0.0;
-  final altN = math.pow((moonAlt / 60.0).clamp(0.0, 1.0), 0.7).toDouble();
-  final am = airMassKastenYoung(moonAlt < 0.1 ? 0.1 : moonAlt);
-  final trans = math.exp(-0.20 * am);
-  return 0.20 * altN * trans * moonBrightnessFactor(phase);
-}
+/// 晴空天光色（线性 RGB，最大分量归一化为 1）。
+///
+/// 物理：天空的颜色来自**单次 Rayleigh 散射**的天空光谱
+///   L_sky(λ) ∝ L_sun(λ)·T_atm(λ)·τ_R(λ)
+/// （τ_R ∝ λ⁻⁴ 是"天空为什么是蓝的"的全部来源），再做 CIE 积分。太阳越低，
+/// 直射光在大气中走的路越长（空气中的光学厚度越大），进入散射的蓝光被提前
+/// 滤掉，天光因此由天顶的蓝逐步偏灰、偏暖 —— 这条演变由光谱自然给出，
+/// 不再是"天顶/地平线两档 RGB 线段"的手调插值。
+List<double> skyColor(double sunAlt) => _scatterColor(sunAlt);
 
-/// 天光颜色（线性 RGB）。
-List<double> skyColor(double sunAlt) {
-  const zenith = <double>[0.42, 0.50, 0.70];
-  const horizon = <double>[0.60, 0.52, 0.52];
-  final t = ((sunAlt - 3.0) / 27.0).clamp(0.0, 1.0);
+/// 散射天空（或暮光）的颜色：Rayleigh 散射光的光谱经 CIE 积分，最大分量
+/// 归一化为 1。太阳高度角可正可负（暮光用负值 = 更长的光程）。
+List<double> _scatterColor(double sunAltDeg) {
+  final a = sunAltDeg < -8.0 ? -8.0 : (sunAltDeg > 90.0 ? 90.0 : sunAltDeg);
+  final am = airMassKastenYoung(a);
+  var x = 0.0, y = 0.0, z = 0.0;
+  for (var l = 380.0; l <= 780.0; l += 2.0) {
+    final e = planckRel(l) * atmosphericTransmittance(l, am) * rayleighTau(l);
+    x += e * cieX(l);
+    y += e * cieY(l);
+    z += e * cieZ(l);
+  }
+  final rgb = xyzToLinearSrgb(x, y, z);
+  var m = rgb[0];
+  if (rgb[1] > m) m = rgb[1];
+  if (rgb[2] > m) m = rgb[2];
+  if (m <= 1e-12) return <double>[1, 1, 1];
   return <double>[
-    horizon[0] * (1 - t) + zenith[0] * t,
-    horizon[1] * (1 - t) + zenith[1] * t,
-    horizon[2] * (1 - t) + zenith[2] * t,
+    math.max(0.0, rgb[0] / m),
+    math.max(0.0, rgb[1] / m),
+    math.max(0.0, rgb[2] / m),
   ];
 }
 
 /// 月光颜色（线性 RGB）。
+///
+/// 月光 = 太阳光谱 × 月面反照率谱（月壤在可见光近似中性、略偏暖）× 月球
+/// 高度角上的大气透过率，因此它的颜色就是**太阳在同一高度角的颜色**
+/// （同一个 [sunColorFromAltitude]）。不要再写一张"月光＝蓝"的表：肉眼觉得
+/// "月夜偏蓝"是**暗视觉珀金杰位移**造成的观察者效应，属于观察者模型
+/// （CIE 191:2010 中间视觉），不属于光源。
 List<double> moonColorRgb(double moonAlt) {
-  var base = <double>[0.34, 0.48, 0.90];
-  if (moonAlt < 20) {
-    final warm = (20 - moonAlt) / 20.0 * 0.3;
-    const warmColor = <double>[0.63, 0.38, 0.14];
-    base = <double>[
-      base[0] * (1 - warm) + warmColor[0] * warm,
-      base[1] * (1 - warm) + warmColor[1] * warm,
-      base[2] * (1 - warm) + warmColor[2] * warm,
-    ];
-  }
-  return base;
+  if (moonAlt <= 0) return <double>[1, 1, 1];
+  return sunColorFromAltitude(moonAlt);
 }
 
-/// 黑体辐射温度 → sRGB。
-List<double> blackbodyToRgb(double tempK) {
-  final t = tempK.clamp(1000.0, 40000.0);
-  final t100 = t / 100.0;
-  double r, g, b;
-  if (t100 <= 66) {
-    r = 255.0;
-    g = 99.4708025861 * math.log(t100) - 161.1195681661;
-    b = t100 <= 19
-        ? 0.0
-        : 138.5177312231 * math.log(t100 - 10) - 305.0447927307;
-  } else {
-    r = 329.698727446 * math.pow(t100 - 60, -0.1332047592).toDouble();
-    g = 288.1221695283 * math.pow(t100 - 60, -0.0755148492).toDouble();
-    b = 255.0;
-  }
-  return <double>[
-    (r.clamp(0.0, 255.0)) / 255.0,
-    (g.clamp(0.0, 255.0)) / 255.0,
-    (b.clamp(0.0, 255.0)) / 255.0,
-  ];
-}
+/// 太阳有效角半径（度）—— [sunAngularDiameterDeg] 的一半，供几何层使用。
+double sunAngularRadiusDeg(double altDeg) => sunAngularDiameterDeg(altDeg) * 0.5;
 
-/// 太阳颜色（由高度角算色温）。
-List<double> sunColorFromAltitude(double altDeg) {
-  double t;
-  if (altDeg >= 60) {
-    t = 6500.0;
-  } else if (altDeg >= 20) {
-    t = 4500 + (altDeg - 20) / 40.0 * 2000;
-  } else if (altDeg >= 5) {
-    t = 2800 + (altDeg - 5) / 15.0 * 1700;
-  } else if (altDeg >= 0) {
-    t = 1800 + altDeg / 5.0 * 1000;
-  } else {
-    t = 1500.0;
-  }
-  return blackbodyToRgb(t);
-}
-
-/// 太阳有效角直径（度）。
+/// 太阳**几何**角直径（度）—— 只随日地距离变化（±1.7%），与高度角无关，
+/// 平均 0.5331°（近地点 0.5422°、远地点 0.5244°）。
 ///
-/// 真实太阳盘约 **0.53°**，但那只是"真空里的太阳"。低太阳角时光线穿过
-/// 厚得多的大气，米氏前向散射把太阳从"锐利圆盘"糊成**带光晕的扩展源**：
-/// 地平线附近肉眼可见的日轮光晕可达 2~3°。这一项直接决定光斑边缘的
-/// 柔化程度 —— 忽略它，黄昏与正午的光斑会一样锐（物理错误）。
+/// 旧实现给了一个 `0.53·AM^0.6`（封顶 3°）的幂律，并把它说成"低太阳角时
+/// 米氏前向散射把日轮糊成 2~3° 的扩展源"。这是错的：**日面几何角径与太阳
+/// 高度角无关**，而大气前向散射产生的是**环日散射（aureole）**——一条低辐
+/// 亮度的幂律尾部（环日/CSR 只有直射光束的百分之几），不是把一个均匀亮盘
+/// 放大到 3°。把两者混成一个幂律会同时把环日能量与半影宽度算错。
 ///
-/// 模型：Δθ = 0.53° · AM^0.6（AM 为 Kasten-Young 大气质量）
-///   alt=90° → AM=1.0  → 0.53°（正午，最锐）
-///   alt=30° → AM=2.0  → 0.80°
-///   alt=10° → AM=5.6  → 1.48°
-///   alt= 5° → AM=10.3 → 2.07°
-///   alt= 1° → AM=25.9 → 3.00°（封顶）
+/// 半影的物理来源是"日面（几何角径）⊗ 大气 PSF"的卷积；本工程按几何日面
+/// 处理（PSF 额外加宽极小）。aureole 若要显式建模，应由大气模块给出其角
+/// 分布（幂律尾部），不能塞进这个"等效圆盘直径"。
+///
+/// [altDeg] 仅为兼容既有调用方的签名保留。
 double sunAngularDiameterDeg(double altDeg) {
-  if (altDeg <= -6.0) return 3.0; // 暮光：纯漫射，取最宽
-  final a = altDeg < 0.5 ? 0.5 : (altDeg > 90.0 ? 90.0 : altDeg);
-  final am = airMassKastenYoung(a);
-  final d = 0.53 * math.pow(am, 0.60).toDouble();
-  return d.clamp(0.53, 3.0);
+  return 0.5331;
 }
 
-/// 暮光天光环境色（线性 RGB）：暮光的天顶已暗，环境光来自
-/// 地平线亮带 —— 比天光更暖更暗。随 |sunAlt| 从暖橙过渡到灰蓝。
-List<double> twilightAmbientColor(double sunAlt) {
-  // sunAlt ∈ (-6, 0]：t=0 → 日没瞬间（暖橙），t=1 → 民用暮光尽头（灰蓝）
-  final t = ((0.0 - sunAlt) / 6.0).clamp(0.0, 1.0);
-  const warm = <double>[0.62, 0.38, 0.22];
-  const cool = <double>[0.22, 0.26, 0.42];
-  return <double>[
-    warm[0] * (1 - t) + cool[0] * t,
-    warm[1] * (1 - t) + cool[1] * t,
-    warm[2] * (1 - t) + cool[2] * t,
-  ];
-}
+/// 暮光天光环境色（线性 RGB）：太阳在地平线下 0~6° 时散射进入室内的色。
+/// 与 [skyColor] 同一物理（Rayleigh 散射光的天空光谱），只是太阳高度角更低、
+/// 光程更长，故自然从暖橙过渡到灰蓝，不再需要 8 档手调色表。
+List<double> twilightAmbientColor(double sunAlt) => _scatterColor(sunAlt);
 
-/// 暮光颜色（线性 RGB）。
+/// 暮光颜色（线性 RGB）。太阳在地平线以上时即太阳直射色。
 List<double> twilightColor(double altDeg) {
   if (altDeg >= 0) return sunColorFromAltitude(altDeg);
-  const stopsV = <double>[0, -2, -4, -6, -9, -12, -15, -18];
-  const stopsC = <List<double>>[
-    <double>[1.00, 0.46, 0.20],
-    <double>[0.85, 0.32, 0.20],
-    <double>[0.62, 0.26, 0.32],
-    <double>[0.42, 0.22, 0.45],
-    <double>[0.28, 0.20, 0.55],
-    <double>[0.18, 0.18, 0.58],
-    <double>[0.10, 0.14, 0.48],
-    <double>[0.05, 0.08, 0.32],
-  ];
-  if (altDeg <= -18) return List<double>.from(stopsC.last);
-  for (var i = 0; i < stopsV.length - 1; i++) {
-    final v0 = stopsV[i];
-    final v1 = stopsV[i + 1];
-    if (altDeg <= v0 && altDeg >= v1) {
-      final t = (altDeg - v0) / (v1 - v0);
-      return <double>[
-        stopsC[i][0] + (stopsC[i + 1][0] - stopsC[i][0]) * t,
-        stopsC[i][1] + (stopsC[i + 1][1] - stopsC[i][1]) * t,
-        stopsC[i][2] + (stopsC[i + 1][2] - stopsC[i][2]) * t,
-      ];
-    }
-  }
-  return List<double>.from(stopsC.last);
+  return _scatterColor(altDeg);
 }

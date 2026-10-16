@@ -11,9 +11,30 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'astro.dart';
 import 'atmosphere.dart';
 import 'material.dart';
 import 'scene3d.dart';
+
+/// 介质界面的**法向**反射率 F0（Schlick 基）：F0 = ((n−1)/(n+1))²。
+///
+/// 玻璃 n = [kGlassIor] = 1.52（钠钙玻璃）→ F0 ≈ 0.043。参考实现写死的
+/// 0.04 对应 n = 1.5，是同一个物理量的另一个取值；这里直接由 ior 导出，
+/// 避免"同一个物理量在项目里有两个数字"。
+/// （待决策项：① F0 全场统一 0.04/0.043 —— 金属/涂料的 F0 差一个量级，
+///   应由材质给出，需产品与材质管线定；② `specTex = 1 + spec·0.5` 这个
+///   ±50% 的手调乘子不是物理量。）
+final double _kF0 = () {
+  final r = (kGlassIor - 1.0) / (kGlassIor + 1.0);
+  return r * r;
+}();
+
+/// Schlick Fresnel：F(θ) = F0 + (1−F0)(1−cosθ)⁵。
+double _fresnelSchlick(double cosTheta, double f0) {
+  final c = 1.0 - cosTheta;
+  final c5 = c * c * c * c * c;
+  return f0 + (1.0 - f0) * c5;
+}
 
 /// 着色输入。
 class TraceInput {
@@ -26,7 +47,8 @@ class TraceInput {
     required this.beamIrradiance,
     required this.diffuseIrradiance,
     required this.ambientColor,
-    required this.penumbra,
+    this.penumbra = 0.0,
+    this.sunAngularRadiusDeg,
     this.exposureEv = 1.0,
   });
 
@@ -39,8 +61,23 @@ class TraceInput {
   final double diffuseIrradiance;
   final List<double> ambientColor;
 
-  /// 半影比例（相对窗宽），0 = 硬边。
+  /// 【旧口径，只为向后兼容】半影采样半径 / 窗宽（无量纲）。
+  ///
+  /// 半影半径本身是**绝对长度** `r(P) = t(P)·tan θ☉`（t = 墙点到窗平面的
+  /// 沿光距离，θ☉ = 光源角半径），与窗宽没有因果关系；把它写成"占窗宽的
+  /// 比例"会让柔化程度随窗宽漂移，且截断点（pipeline 的 clamp(0,0.25)）
+  /// 也随窗宽移动。
+  ///
+  /// 本字段在新代码里**不应再使用**：请改用 [sunAngularRadiusDeg]。
+  /// 保留时的处理：按 pipeline `_penumbraFor` 的公式逆向换算出等效光源
+  /// 角半径 θ = atan(penumbra·窗宽 / D_代表)，随后仍按逐点真实 t 计算半影
+  /// ——即只继承旧口径的"量级"，不继承它"全画面单一距离"的错误。
   final double penumbra;
+
+  /// **光源角半径（度）**：几何日面 ⊗ 环日散射的等效角半径，由外部天文/
+  /// 大气模块给出（几何日面恒为 0.2665°；环日散射是低辐亮度幂律尾部，
+  /// 会带来极小的额外加宽）。为空时由 astro 的 [sunAngularDiameterDeg] 推出。
+  final double? sunAngularRadiusDeg;
 
   /// 视觉适应曝光（ACES 之前乘到线性辐照度上）。
   final double exposureEv;
@@ -101,14 +138,19 @@ TraceOutput traceScene(TraceInput input) {
   final glassT = glassTransmittance(cosInc);
 
   // 直射可见性（穿窗 + 窗格）
-  final visible =
-      scene.windowVisibilityBatch(pts, sunDir, penumbra: input.penumbra);
+  //
+  // 半影半径 = **该墙点**沿光线到窗平面的距离 × tan(光源角半径)。
+  // 角半径来自外部（[TraceInput.sunAngularRadiusDeg]，通常由 astro/大气模块
+  // 给出）；若只有旧口径的 penumbra 比例，则按 pipeline `_penumbraFor` 的
+  // 定义逆向换算，工作量级不变、距离依赖改为逐点正确。
+  final visible = scene.windowVisibilityBatch(pts, sunDir,
+      sunAngularRadiusDeg: input.sunAngularRadiusDeg ??
+          _sunAngularRadiusFromLegacyPenumbra(input));
 
   final cam = scene.camPos;
   final albedo = mat.albedo;
   final normal = mat.normal;
   final roughness = mat.roughness;
-  final specularTex = mat.specular;
   final isWater = mat.isWater;
 
   final out = Float32List(n * 3);
@@ -148,14 +190,8 @@ TraceOutput traceScene(TraceInput input) {
     final vis = visible[i];
     visibleCount += vis;
     final ndlV = ndl * vis;
+    var r = 0.0, g = 0.0, b = 0.0;
 
-    // 漫反射
-    final kd = ndlV * beamScaleAll;
-    var r = aR * sunR * kd;
-    var g = aG * sunG * kd;
-    var b = aB * sunB * kd;
-
-    // 镜面（Cook-Torrance GGX + Smith + Schlick）
     if (ndlV > 0) {
       // 视线方向：P → 相机
       var vx = cam[0] - px;
@@ -165,7 +201,19 @@ TraceOutput traceScene(TraceInput input) {
       vx *= vInv;
       final vy2 = vy * vInv;
       final vz2 = vz * vInv;
+      final ndv = math.max(nx * vx + ny * vy2 + nz * vz2, 0.0);
 
+      // 漫反射：必须乘 (1 − F(ndv))。
+      // 镜面反射走掉的那部分能量不再进入漫射通道，旧实现把整份入射能量
+      // 同时给了漫射和镜面（两年前后都取 F0=0.04 却只在镜面里用），
+      // 破坏了能量守恒；掠射（F→1）时最明显。
+      final fres = _fresnelSchlick(ndv, _kF0);
+      final kd = ndlV * beamScaleAll * (1.0 - fres);
+      r = aR * sunR * kd;
+      g = aG * sunG * kd;
+      b = aB * sunB * kd;
+
+      // 镜面（Cook-Torrance GGX + Smith + Schlick）
       var hx = vx + toSun[0];
       var hy = vy2 + toSun[1];
       var hz = vz2 + toSun[2];
@@ -173,12 +221,15 @@ TraceOutput traceScene(TraceInput input) {
       hx *= hInv;
       hy *= hInv;
       hz *= hInv;
-
-      final ndv = math.max(nx * vx + ny * vy2 + nz * vz2, 0.0);
       final ndh = math.max(nx * hx + ny * hy + nz * hz, 0.0);
       final specBrdf = _cookTorrance(ndl, ndv, ndh, roughness[i]);
-      final specTex = 1.0 + specularTex[i] * 0.5;
-      final specK = specBrdf * specTex * vis * beamScaleAll;
+      // 镜面强度不再乘一个 ±50% 的手调旋钮（1 + spec·0.5）：界面反射的
+      // 强度由 Fresnel（F0 由折射率给出）决定，材质镜面贴图若将来引入，
+      // 应直接调制 F0/粗糙度，而不是在 BRDF 之外乘一个亮度系数。
+      const double specTex = 1.0;
+      // 渲染方程里 BRDF 必须再乘 cos θ_i（= ndl）。旧实现漏了这一项，
+      // 而 Cook-Torrance 的分母含 ndl，故掠射时高光会被放大成 1/ndl。
+      final specK = specBrdf * specTex * vis * beamScaleAll * ndl;
       r += sunR * specK;
       g += sunG * specK;
       b += sunB * specK;
@@ -242,7 +293,24 @@ TraceOutput traceScene(TraceInput input) {
   );
 }
 
-/// Cook-Torrance BRDF（D: GGX，G: Smith，F: Schlick，F0 = 0.04）。
+/// 旧口径（半影半径 / 窗宽）→ 等效光源角半径（度）。
+///
+/// pipeline 旧公式为 `penumbra = D_代表·tan θ / 窗宽`，此处精确反解
+/// `θ = atan(penumbra·窗宽 / D_代表)`；D_代表 = [Scene3D.typicalWindowToWallDistance]。
+/// 这样旧调用方仍然按原意图决定**柔化量级**（含 penumbraScale 等微调），
+/// 而"距离依赖"改由 scene3d 逐点计算。
+///
+/// 若 penumbra ≤ 0（旧"硬边"口径，物理上不存在：3 m 处日面半影宽 2.8 cm），
+/// 返回 null → 由 scene3d 用几何日面角半径兜底。
+double? _sunAngularRadiusFromLegacyPenumbra(TraceInput input) {
+  if (input.penumbra <= 1e-6) return null;
+  final dTyp = input.scene.typicalWindowToWallDistance();
+  final wWin = math.max(input.scene.cfg.windowW, 1e-6);
+  final tanTheta = input.penumbra * wWin / math.max(dTyp, 1e-6);
+  return math.atan(tanTheta) / kDeg;
+}
+
+/// Cook-Torrance BRDF（D: GGX，G: Smith，F: Schlick）。
 double _cookTorrance(double ndl, double ndv, double ndh, double roughness) {
   final a = math.pow(math.max(roughness, 0.03), 2).toDouble();
   final a2 = a * a;
@@ -252,7 +320,7 @@ double _cookTorrance(double ndl, double ndv, double ndh, double roughness) {
   final g1l = ndl / (ndl * (1 - k) + k + 1e-6);
   final g1v = ndv / (ndv * (1 - k) + k + 1e-6);
   final g = g1l * g1v;
-  final f = 0.04 + 0.96 * math.pow(1.0 - ndv, 5).toDouble();
+  final f = _fresnelSchlick(ndv, _kF0);
   final brdf = (d * g * f) / (4.0 * ndl * ndv + 1e-6);
   return brdf.clamp(0.0, 20.0);
 }

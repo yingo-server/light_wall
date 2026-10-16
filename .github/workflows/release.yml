@@ -1,0 +1,154 @@
+name: Release
+
+# 正式发布：多目标、多架构
+#   · 命令行渲染器（纯 Dart，AOT）：Windows / Linux × x64 / arm64
+#   · 桌面版（Flutter Windows）：x64 / arm64
+#
+# 触发：
+#   · 手动（指定 tag）
+#   · 推送 v* 标签
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release 版本号（如 v1.2.0）'
+        default: 'v1.2.0'
+      build_desktop_arm64:
+        description: '是否尝试构建 Windows arm64 桌面版（需 arm64 runner）'
+        default: 'true'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.47.7'
+
+jobs:
+  # ── 命令行渲染器：纯 Dart AOT，无 Flutter/GPU 依赖 ────────────────
+  cli:
+    name: CLI · ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            out: lightwall_render-linux-x64
+            exe: ''
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            out: lightwall_render-linux-arm64
+            exe: ''
+          - name: windows-x64
+            os: windows-latest
+            out: lightwall_render-windows-x64.exe
+            exe: '.exe'
+          - name: windows-arm64
+            os: windows-11-arm
+            out: lightwall_render-windows-arm64.exe
+            exe: '.exe'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.os == 'windows-11-arm' || matrix.os == 'ubuntu-24.04-arm' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - name: 依赖与检查
+        working-directory: packages/lightwall_core
+        run: dart pub get && dart analyze
+      - name: 单元测试 + 光照门禁
+        working-directory: packages/lightwall_core
+        run: |
+          dart test
+          dart run tools/light_diag.dart
+      - name: AOT 编译
+        working-directory: packages/lightwall_core
+        run: dart compile exe bin/render.dart -o "${{ github.workspace }}/${{ matrix.out }}"
+      - name: 冒烟
+        working-directory: packages/lightwall_core
+        run: dart run bin/render.dart --bg ../../app/assets/backgrounds/microcement.png --time 2025-12-21T08:30:00+08:00 --lat 39.9042 --lon 116.4074 --window east --width 480 --height 270 --out "${{ github.workspace }}/cli_smoke.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: ${{ matrix.out }}
+          retention-days: 90
+
+  # ── 桌面版：Flutter Windows ─────────────────────────────────────
+  desktop:
+    name: Desktop · windows-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-latest
+            zip: LightWall-windows-x64.zip
+          - arch: arm64
+            os: windows-11-arm
+            zip: LightWall-windows-arm64.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - working-directory: app
+        run: flutter pub get
+      - working-directory: app
+        run: flutter analyze --no-fatal-infos
+      - name: 构建 Windows（Release）
+        working-directory: app
+        run: flutter build windows --release --target-platform windows-${{ matrix.arch }}
+      - name: 打包
+        shell: pwsh
+        run: |
+          $dir = "app/build/windows/${{ matrix.arch }}/runner/Release"
+          if (-not (Test-Path $dir)) {
+            $dir = (Get-ChildItem -Recurse -Directory app/build/windows -Filter Release | Select-Object -First 1).FullName
+          }
+          Copy-Item (Join-Path "${{ github.workspace }}" "lightwall_render-windows-${{ matrix.arch }}.exe") $dir -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path $dir -DestinationPath "${{ matrix.zip }}"
+          Write-Host "ZIP: $([math]::Round((Get-Item '${{ matrix.zip }}').Length/1MB,1)) MB"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: ${{ matrix.zip }}
+          retention-days: 90
+
+  # ── 汇总发布 ────────────────────────────────────────────────────
+  publish:
+    name: 发布 Release
+    needs: [cli, desktop]
+    if: always() && (needs.cli.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: 列产物
+        run: ls -la
+      - name: 生成校验和
+        run: sha256sum lightwall_render-* LightWall-windows-*.zip 2>/dev/null > SHA256SUMS.txt || true
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: LightWall ${{ github.event.inputs.tag || github.ref_name }}
+          prerelease: false
+          draft: false
+          fail_on_unmatched_files: false
+          overwrite_files: true
+          body_path: release_notes.md
+          files: |
+            lightwall_render-*
+            LightWall-windows-*.zip
+            SHA256SUMS.txt

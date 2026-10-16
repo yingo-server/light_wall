@@ -17,28 +17,23 @@
 // 其中 θ = 天顶角，γ = 与太阳的夹角（弧度）。
 import 'dart:math' as math;
 
-/// CIE 标准晴空系数（按太阳天顶角分档）。
-/// 每档 5 个系数：a, b, c, d, e（b 对晴空恒为 0，保留以显式对应标准表）。
-const List<({double zMin, double a, double b, double c, double d, double e})>
-    kClearSkyCoeffs =
-    <({double zMin, double a, double b, double c, double d, double e})>[
-  (zMin: 0, a: -0.070, b: 0.000, c: 0.071, d: -0.017, e: 0.230),
-  (zMin: 15, a: -0.100, b: 0.000, c: 0.086, d: -0.019, e: 0.240),
-  (zMin: 30, a: -0.177, b: 0.000, c: 0.114, d: -0.028, e: 0.250),
-  (zMin: 45, a: -0.288, b: 0.000, c: 0.153, d: -0.040, e: 0.280),
-  (zMin: 60, a: -0.488, b: 0.000, c: 0.216, d: -0.062, e: 0.320),
-  (zMin: 75, a: -0.843, b: 0.000, c: 0.361, d: -0.110, e: 0.400),
-];
-
-({double a, double b, double c, double d, double e}) clearSkyCoeffs(
-    double sunZenithDeg) {
-  final z = sunZenithDeg.clamp(0.0, 90.0);
-  var sel = kClearSkyCoeffs.first;
-  for (final row in kClearSkyCoeffs) {
-    if (z >= row.zMin) sel = row;
-  }
-  return (a: sel.a, b: sel.b, c: sel.c, d: sel.d, e: sel.e);
-}
+/// CIE 标准晴空系数（ISO 15469:2004 / CIE S 011 "CIE Standard Clear Sky"）。
+///
+/// ⚠ 注意 **b ≠ 0**：gradation 项 `(1 + a·e^{b/cosθ})` 是"天顶 ↔ 地平线"
+/// 亮度梯度的**唯一来源**。必须用 CIE 标准晴空那一组固定系数
+/// （a=−1.0, b=−0.32, c=10, d=−3.0, e=0.45）。
+///
+/// 早期实现误用了一张"按太阳天顶角分档、b 列全为 0"的表：gradation 项
+/// 退化成常数、分母同值抵消 → 天顶到地平线的亮度因子恒等于 1.0000，
+/// 太阳侧/背阳侧反差只剩 ±25%（真值 3~10×），整段方向结构完全丢失。
+///
+/// 本组系数的自检值：
+///   天顶(θ=0)      : 1 + (−1)·e^(−0.32) = 0.274
+///   地平线(θ→90°)  : ≈ 1.000            → 地平线比天顶亮 3.6×
+///   太阳侧(γ=0)    : 1 + 10 + 0.45 = 11.45
+///   背阳侧(γ=180°) : ≈ 1.45             → 太阳侧比背阳侧亮 7.9×
+const ({double a, double b, double c, double d, double e}) kClearSky =
+    (a: -1.0, b: -0.32, c: 10.0, d: -3.0, e: 0.45);
 
 /// 相对天顶亮度的**天空分布因子**（无量纲，天顶方向 = 1）。
 ///
@@ -48,11 +43,13 @@ const List<({double zMin, double a, double b, double c, double d, double e})>
 /// [sunAltDeg]：太阳高度角（用于太阳落入地平线时的退化处理）
 double skyLuminanceFactor(
     double zenithRad, double gammaRad, double sunZenithDeg, double sunAltDeg) {
-  if (sunAltDeg <= 0.0) {
-    // 无太阳：退化为均匀阴天分布（地平线略亮，符合真实无阳天空）
-    return 0.75 + 0.25 * math.sin(zenithRad);
-  }
-  final co = clearSkyCoeffs(sunZenithDeg);
+  // 不再对 sunAltDeg ≤ 0 做硬切换：旧实现在太阳跨地平线时切成
+  // `0.75 + 0.25·sin(z)`，丢掉全部太阳方位依赖，与晴天分支在 0° 处不连续
+  // （天顶亮度 1.0000 → 0.7500 的 25% 台阶 + 方位结构整体消失），
+  // 而黄昏/晨曦正是本产品的主战场。散射光的**方向结构**由同一套 CIE 晴空
+  // 系数给出，太阳落到地平线下时依然成立（只是整体亮度下降，那由
+  // astro.skyIrradiance / 曝光负责，不是分布因子的职责）。
+  const co = kClearSky;
   // 分母：θ=0（天顶）、γ=π/2 时的归一化值
   final denom = (1.0 + co.a * math.exp(co.b)) *
       (1.0 + co.c * math.exp(co.d * math.pi / 2) + co.e * 0.0);

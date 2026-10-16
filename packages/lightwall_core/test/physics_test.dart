@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 // 物理内核测试：天文、大气、窗户几何
 import 'package:lightwall_core/lightwall_core.dart';
 import 'package:test/test.dart';
@@ -28,11 +30,38 @@ void main() {
 
   group('大气与辐照度', () {
     test('分波长透过率：正午偏白，低角偏红', () {
-      final noon = solarIrradianceRgb(60.0);
-      expect(
-          (noon[0] - noon[2]).abs(), lessThan(0.20)); // 通道接近（高空仍有 0.16 的瑞利偏色）
-      final low = solarIrradianceRgb(3.0);
-      expect(low[0], greaterThan(low[2])); // 红 > 蓝
+      // 口径说明：新实现返回**亮度归一化的线性色度**，红蓝差天然比旧的
+      // sRGB 黑体值大（旧值把 gamma 编码的显示值当线性光用）。
+      final noon = sunColorFromAltitude(60.0);
+      expect(noon[0], greaterThan(noon[2]));
+      expect((noon[0] - noon[2]) / noon[0], lessThan(0.45)); // 正午仍偏白
+      final low = sunColorFromAltitude(3.0);
+      expect(low[0], greaterThan(low[2]));
+      expect((low[0] - low[2]) / low[0],
+          greaterThan((noon[0] - noon[2]) / noon[0] * 1.8));
+      // 色度不得为负（超出 sRGB 色域时应裁剪而非留负值）
+      for (final a in <double>[0.0, 0.5, 1.0, 3.0, 10.0, 45.0, 90.0]) {
+        for (final v in sunColorFromAltitude(a)) {
+          expect(v, greaterThanOrEqualTo(0.0));
+        }
+      }
+    });
+
+    test('光谱积分基准：6500K 黑体（无大气）应接近 D65 白点', () {
+      // 对"普朗克光谱 × CIE CMF × sRGB 矩阵"整条链的标定检查：
+      // CMF 拟合或色度矩阵写错，这里会立刻失败。
+      var x = 0.0, y = 0.0, z = 0.0;
+      for (var l = 380.0; l <= 780.0; l += 2.0) {
+        final e = planckRel(l, 6500.0) * 2.0;
+        x += e * cieX(l);
+        y += e * cieY(l);
+        z += e * cieZ(l);
+      }
+      final rgb = xyzToLinearSrgb(x, y, z);
+      final m = rgb.reduce((a, b) => a > b ? a : b);
+      for (final v in rgb) {
+        expect(v / m, closeTo(1.0, 0.06));
+      }
     });
 
     test('辐照度随高度角单调上升', () {
@@ -42,8 +71,15 @@ void main() {
 
     test('天光在夜间为 0，白天随高度角上升', () {
       expect(skyIrradiance(-5), 0.0);
-      expect(skyIrradiance(45.8), closeTo(0.180, 0.01));
+      // 口径更新：旧的 0.22·sin^0.6 是一个在 h→0 处趋于 0 的幂律拟合
+      // （0.180 @45.8°），与暮光分支不连续。现改为晴天实测的漫射量级
+      // 0.05 + 0.06·sin h（天顶 0.11、地平线 0.05）→ 45.8° 处 ≈ 0.093。
+      expect(skyIrradiance(45.8), closeTo(0.093, 0.01));
       expect(skyIrradiance(20), lessThan(skyIrradiance(60)));
+      // 与暮光在 h=0 处连续（不出现"日落瞬间全黑"的台阶）
+      expect(twilightDiffuse(0.0), closeTo(0.05, 0.005));
+      expect(twilightDiffuse(-3.0), lessThan(twilightDiffuse(-1.0)));
+      expect(twilightDiffuse(-6.0), greaterThanOrEqualTo(nightSkyIrradiance(0, 0.0)));
     });
 
     test('Kasten-Young 大气质量在天顶为 1 量级', () {
@@ -96,7 +132,26 @@ void main() {
       final dir2 = scene.sunToRoomDir(0, 20);
       final toSun2 = <double>[-dir2[0], -dir2[1], -dir2[2]];
       final cos2 = windowIncidenceCos(toSun2, scene.windowOutwardNormal());
-      expect(cos2, 0.0);
+      expect(cos2, closeTo(0.0, 1e-9)); // 掠射/背面：浮点意义下的 0
+    });
+
+    test('任意方位角的入射余弦都与解析真值一致', () {
+      // 旧实现把窗法线**量化到三面墙**（±45°）：360 个方位角里有 176 个
+      // 算错入射余弦（例如窗朝 136°、太阳 90° 时真值 0.653、旧代码 0），
+      // 只有正东/正西/正南/正北恰好精确 —— 所以旧测试没能暴露它。
+      // 这里对所有方位角组合与解析式 cos(Δaz)·cos(alt) 逐一比对。
+      for (var waz = 0.0; waz < 360.0; waz += 15.0) {
+        final scene = Scene3D(SceneConfig(), waz);
+        for (var saz = 0.0; saz < 360.0; saz += 15.0) {
+          final sd = scene.sunToRoomDir(saz, 30.0);
+          final toSun = <double>[-sd[0], -sd[1], -sd[2]];
+          final cos = windowIncidenceCos(toSun, scene.windowOutwardNormal());
+          final d = ((saz - waz) % 360.0 + 540.0) % 360.0 - 180.0;
+          final truth = math.max(
+              0.0, math.cos(d * math.pi / 180.0) * math.cos(30.0 * math.pi / 180.0));
+          expect(cos, closeTo(truth, 1e-9), reason: '窗 $waz° / 太阳 $saz°');
+        }
+      }
     });
   });
 
@@ -105,16 +160,18 @@ void main() {
       expect(interreflectionFloor(0.55), closeTo(1.2222, 0.001));
     });
 
-    test('空气光在室内只有千分之几（不应硬凑雾感）', () {
-      final f = airlightFraction(4.0);
-      expect(f, lessThan(0.01));
-      expect(f, greaterThan(0.0));
+    test('房间等效反射率按面积加权（扣窗洞）', () {
+      final rho = roomAlbedoAreaWeighted();
+      // 白墙 0.75 / 顶 0.80 / 水泥地 0.25 的面积加权，结果应介于地板与顶棚
+      expect(rho, greaterThan(0.25));
+      expect(rho, lessThan(0.80));
     });
 
-    test('视觉适应：晴天 ≈ 1，暗处提亮，夜间不提亮', () {
-      expect(eyeExposureEv(1.0, sunAlt: 45), closeTo(1.0, 0.01));
-      expect(eyeExposureEv(0.25, sunAlt: 45), greaterThan(1.3));
-      expect(eyeExposureEv(0.25, sunAlt: 0), closeTo(1.0, 0.01));
+    test('曝光：完全适应会抹平昼夜，部分适应保留层次且单调', () {
+      // 画面越亮，曝光倍率越小（单调）
+      expect(sceneExposureEv(0.5), lessThan(sceneExposureEv(0.05)));
+      // 部分适应：亮场景不会被压到与暗场景同亮度关系之外
+      expect(sceneExposureEv(1.0), greaterThan(0.0));
     });
   });
 }

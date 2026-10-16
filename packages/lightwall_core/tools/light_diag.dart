@@ -97,8 +97,9 @@ void main(List<String> argv) {
     final ev = res.albedoStats['exposure_ev'] ?? 1;
 
     final problems = <String>[];
-    final isDay = res.light.source == LightSource.sun ||
-        res.light.source == LightSource.twilight;
+    // 白天亮度区间：只对**有太阳**的场景断言。暮光/夜间本来就该暗，
+    // 把它们算进"白天"等于要求黄昏和正午一样亮。
+    final isDay = res.light.source == LightSource.sun;
     if (isDay && (s['mean']! < 40 || s['mean']! > 210)) {
       problems.add('白天均值超出 [40,210]');
     }

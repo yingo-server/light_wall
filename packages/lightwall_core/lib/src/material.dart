@@ -56,131 +56,49 @@ class MaterialMaps {
 }
 
 /// 从反射率图 R_clean（RGB 交错，长度 w*h*3）提取材质。
+///
+/// 立场修正（报告 MA 系列）：从**单张照片**反推反射率/法线/粗糙度是病态的
+/// 逆问题（对任意 R 都有 S=I/R），过去那套"min 通道当光照 / 局部方差当粗糙度
+/// / 亮度梯度当法线 / 比周围亮当高光"的做法会**伪造**出物理上不存在的结构
+/// （把底图花纹当浮雕、把对比度当微表面粗糙度）。这里只保留有物理依据的部分：
+///   · 漫反射基色 ρ = Retinex 去光照后的 albedo（不再二次去光照）；
+///   · 粗糙度取室内涂装墙面的物理合理常数；
+///   · 法线取真实几何（平面墙）；
+///   · 镜面能量由 tracer 的 Fresnel 项承担（不需要伪造的高光图）。
+/// 逐像素的粗糙度/法线/镜面若要真正恢复，需要多发/多视角输入或材质库，属
+/// 产品定位级决策（见待决策）。
 MaterialMaps extractMaterial(Float32List rClean, int w, int h) {
   final n = w * h;
 
-  // ── 1. 亮度 ──
-  final lum = Float32List(n);
-  for (var i = 0; i < n; i++) {
-    lum[i] = 0.2126 * rClean[i * 3] +
-        0.7152 * rClean[i * 3 + 1] +
-        0.0722 * rClean[i * 3 + 2];
-  }
-
-  // ── 2. Albedo（彩色先验）──
-  final shading = Float32List(n);
-  for (var i = 0; i < n; i++) {
-    final r = rClean[i * 3], g = rClean[i * 3 + 1], b = rClean[i * 3 + 2];
-    shading[i] = math.min(r, math.min(g, b));
-  }
-  final shadeBlur =
-      blurGray(shading, w, h, math.max(4.0, math.min(w, h) * 0.03));
+  // ── 1. 漫反射基色 ρ = 反射率 ──
+  // 直接来自 Retinex 的 albedo（已经剥离了光照），按能量守恒钳到 [0,1]。
+  // 旧实现又对这张图取"通道最小值当光照"再除一次 —— 二次去光照；而且
+  // "shading=min(R,G,B)"这个彩色先验只在**灰色光照**下成立，有色物体上会把
+  // 物体的色度当光照除掉（色度被夸大约 5×）；末尾的"均值归一到 1"还抹掉了
+  // 不同底图的绝对反射率。
   final albedo = Float32List(n * 3);
-  var sum = 0.0;
-  for (var i = 0; i < n; i++) {
-    final s = math.max(shadeBlur[i], 1e-6);
-    for (var c = 0; c < 3; c++) {
-      albedo[i * 3 + c] = rClean[i * 3 + c] / s;
-    }
-    sum += (albedo[i * 3] + albedo[i * 3 + 1] + albedo[i * 3 + 2]) / 3.0;
-  }
-  final mean = sum / math.max(1, n);
-  if (mean > 1e-6) {
-    final inv = 1.0 / mean;
-    for (var i = 0; i < n * 3; i++) {
-      albedo[i] = (albedo[i] * inv).clamp(0.05, 3.0);
-    }
+  for (var i = 0; i < n * 3; i++) {
+    albedo[i] = rClean[i].clamp(0.0, 1.0);
   }
 
-  // ── 3. Roughness（局部方差）──
-  final radius = math.max(3.0, math.min(w, h) * 0.008);
-  final localMean = blurGray(lum, w, h, radius);
-  final lumSq = Float32List(n);
-  for (var i = 0; i < n; i++) {
-    lumSq[i] = lum[i] * lum[i];
-  }
-  final localSq = blurGray(lumSq, w, h, radius);
+  // ── 2. 粗糙度：室内涂装墙面/壁纸的物理合理常数（α≈0.5）──
   final roughness = Float32List(n);
   for (var i = 0; i < n; i++) {
-    final v = math.max(localSq[i] - localMean[i] * localMean[i], 0.0);
-    final std = math.sqrt(v);
-    roughness[i] =
-        ((std / math.max(localMean[i], 1e-4)) * 2.0).clamp(0.10, 0.90);
+    roughness[i] = 0.5;
   }
 
-  // ── 4. Normal（亮度梯度）──
-  final lumSmooth = blurGray(lum, w, h, math.max(1.5, math.min(w, h) * 0.003));
-  final gx = Float32List(n);
-  final gy = Float32List(n);
-  sobelGray(lumSmooth, w, h, gx, gy);
+  // ── 3. 法线：平面墙的真实几何法线 (0,0,1) ──
   final normal = Float32List(n * 3);
   for (var i = 0; i < n; i++) {
-    final nx = -gx[i], ny = -gy[i], nz = 1.0;
-    final inv = 1.0 / math.sqrt(nx * nx + ny * ny + 1.0);
-    normal[i * 3] = nx * inv;
-    normal[i * 3 + 1] = ny * inv;
-    normal[i * 3 + 2] = nz * inv;
+    normal[i * 3 + 2] = 1.0;
   }
 
-  // ── 5. Specular（局部高光）──
-  final large = blurGray(lum, w, h, math.max(8.0, math.min(w, h) * 0.05));
+  // ── 4. 镜面：由 tracer 的 Fresnel 承担 ──
   final specular = Float32List(n);
-  var peak = 0.0;
-  for (var i = 0; i < n; i++) {
-    final v = math.max(lum[i] - large[i], 0.0);
-    specular[i] = v;
-    if (v > peak) peak = v;
-  }
-  if (peak > 1e-6) {
-    for (var i = 0; i < n; i++) {
-      specular[i] = specular[i] / peak;
-    }
-  }
 
-  // ── 6. Height（法线积分）──
-  final height = Float32List(n);
-  final hx = Float64List(n);
-  final hy = Float64List(n);
-  for (var y = 0; y < h; y++) {
-    var acc = 0.0;
-    for (var x = 0; x < w; x++) {
-      final i = y * w + x;
-      acc += -normal[i * 3] / math.max(normal[i * 3 + 2], 1e-4);
-      hx[i] = acc;
-    }
-  }
-  for (var x = 0; x < w; x++) {
-    var acc = 0.0;
-    for (var y = 0; y < h; y++) {
-      final i = y * w + x;
-      acc += -normal[i * 3 + 1] / math.max(normal[i * 3 + 2], 1e-4);
-      hy[i] = acc;
-    }
-  }
-  var hMean = 0.0;
-  for (var i = 0; i < n; i++) {
-    height[i] = (hx[i] + hy[i]) * 0.5;
-    hMean += height[i];
-  }
-  hMean /= math.max(1, n);
-  var hMax = 0.0;
-  for (var i = 0; i < n; i++) {
-    height[i] -= hMean;
-    final a = height[i].abs();
-    if (a > hMax) hMax = a;
-  }
-  if (hMax > 1e-6) {
-    for (var i = 0; i < n; i++) {
-      height[i] /= hMax;
-    }
-  }
-
-  // ── 7. 水面判定 ──
+  // ── 5. 高度图 / 水面：不再从 albedo 积分高度、不做阈值水面判定 ──
+  final heightMap = Float32List(n);
   final isWater = Uint8List(n);
-  for (var i = 0; i < n; i++) {
-    final l = (albedo[i * 3] + albedo[i * 3 + 1] + albedo[i * 3 + 2]) / 3.0;
-    isWater[i] = (l < 0.10 && roughness[i] < 0.20) ? 1 : 0;
-  }
 
   return MaterialMaps(
     width: w,
@@ -189,7 +107,7 @@ MaterialMaps extractMaterial(Float32List rClean, int w, int h) {
     roughness: roughness,
     normal: normal,
     specular: specular,
-    heightMap: height,
+    heightMap: heightMap,
     isWater: isWater,
   );
 }

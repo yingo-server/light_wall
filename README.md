@@ -1,106 +1,136 @@
 # LightWall · 光墙
 
-> Windows 桌面壁纸引擎：把一面**平光材质墙**实时重打成**真实窗光**，
-> 每 3 分钟重新渲染并设为壁纸 —— 太阳位置由经纬度与时刻算出，
-> 光斑随季节、钟点、朝向自然流转，墙上叠着朱红题字（支持变量与倒计时）。
+> 一窗之光，四时流转。
+> 把一面平光材质墙，交给真实的太阳。
 
-![platform](https://img.shields.io/badge/platform-Windows-0078D4)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20CLI-0078D4)
+![arch](https://img.shields.io/badge/arch-x64%20%7C%20arm64-555)
 ![release](https://img.shields.io/github/v/release/yingo-server/light_wall)
-![flutter](https://img.shields.io/badge/Flutter-3.47%2B-02569B)
 ![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 ---
 
-## 它做什么
+## 提要
+
+LightWall 是**桌面壁纸引擎**，亦是一部**可执行的室内光照物理**。
+
+它取经纬度与时刻，算出太阳与月亮的方位与高度，复演其穿过大气之途；
+再以一间三维房间为器，以窗为口，令光落于墙上、折于窗格、弹于四壁。
+所出之画，非滤镜之工，乃**渲染方程之解**。
+
+> 本文体例，参照 Google 技术白皮书的写法：
+> 先陈提要，次明范围，再列公理、模型、实现与验证，末言已知局限。
+> 凡涉物理之处，皆给依据；凡为工程所设之常数，皆注明其不得已。
+
+---
+
+## 一、所为
 
 ```
-平光材质底图 ──► Retinex 分解 ──► PBR 材质提取 ──► 3D 房间 + 窗光追踪
-              ──► ACES 色调映射 ──► 相机效果 ──► 朱红叠字 ──► 壁纸
+平光底图 ─► 反射率分解 ─► 材质 ─► 三维房间与窗光追踪 ─► 室内互反射
+          ─► 线性域求和 ─► ACES 影调映射 ─► 显示编码 ─► 朱红题字 ─► 壁纸
 ```
 
-- **真实天文**：太阳/月亮位置由经纬度与 UTC 时刻算出，日出日落、暮光、月相都在
-- **分波长大气**：`T(λ)=exp(-(τ_R(λ)+τ_M)·AM)` —— 低太阳角自动偏橙红
-- **窗格光斑**：位置/拉伸/剪切由太阳方位与高度驱动，窗框投影真实存在
-- **室内物理**：窗户当**矩形面光源**做面积分，叠加室内互反射底，明暗过渡自然
-- **文字是颜料不是贴纸**：乘性反射合成 `L = L_wall·(1−occ·s)·[(1−α)+α·ρ]`，
-  字会随光斑变亮、在暗处变沉
-- **变量与倒计时**：`{time}` `{date}` `{countdown:2026-01-01}` …
-  见 [文字变量](docs/variables.md)
+- **真实天文**：日、月之位，由经纬度与 UTC 推得；日出日没、暮光、月相俱在。
+- **分波长大气**：`T(λ)=exp(−[τ_R(λ)+τ_O₃(λ)+τ_M(λ)]·m)`，低日自暖，无须调色。
+- **窗格光斑**：形、位、明暗，皆由日之方位与高度所驱；窗框投影，实有其影。
+- **室内物理**：窗作**矩形面光源**，行双余弦积分；叠加一阶互反射。
+- **文字是颜料，非贴纸**：乘性反射合成 `L = L_wall·(1−occ·s)·[(1−α)+α·ρ]`，
+  光斑之下字亦明，幽暗之中字亦沉。
 
-**只允许晴天**：本产品刻意去掉天气系统（云/雨/雪/雾），只保留晴空物理 ——
-参数更少、结果更可预测、画面更干净。
+**只做晴天**。云雨雪雾，一概去之。参数愈少，物性愈显。
 
 ---
 
-## 快速开始
+## 二、取用
 
-1. 从 [Releases](https://github.com/yingo-server/light_wall/releases) 下载
-   `LightWall-windows-x64.zip`，解压到任意目录
-2. 双击 `light_wall.exe`，程序驻留托盘，每 3 分钟自动更新壁纸
-3. 右键托盘图标 → **打开面板**，即可改文字与底图
+### 桌面版（Windows）
 
-> 首次运行会在 `%APPDATA%\LightWall\` 生成配置与输出目录。
+自 [Releases](https://github.com/yingo-server/light_wall/releases) 取
+`LightWall-windows-x64.zip` 或 `…-arm64.zip`，解压即用。
+双击 `light_wall.exe`，栖于托盘，每三刻自新其壁。
 
----
+### 命令行版（Windows / Linux，x64 / arm64）
 
-## 面板
+内核为**纯 Dart**，可 AOT 编译为独立可执行文件，不倚 Flutter、不需 GPU。
+凡无图形之境（远程会话、无显卡之虚机），皆可出图。
 
-| 页面 | 作用 |
-|---|---|
-| **概览** | 当前光照信息（太阳高度/方位、辐照度）、预览、立即渲染 |
-| **文字** | 文案模板（支持变量）、字体、字号、位置、年代感强度 |
-| **底图** | 内置材质 + 导入自己的图片（自动转成平光输入） |
-| **设置** | 开机自启、隐藏到托盘、渲染间隔说明、日志 |
-
-界面遵循 Material 3，简洁大气；除上述内容外**不暴露多余参数**。
-
----
-
-## 命令行（调试/批处理）
-
-```powershell
-# 渲染一张并存到指定路径（不驻留托盘）
-light_wall.exe --render --out out.png --time "2025-12-21T08:30:00+08:00" `
-               --lat 39.9042 --lon 116.4074 --window east --text "朝闻道"
-
-# 输出界面截图（CI 用来做 UI 回归）
-light_wall.exe --shot ui_home.png --ui-page home
+```bash
+lightwall_render --bg wall.png --time 2025-12-21T08:30:00+08:00 \
+                 --lat 39.9042 --lon 116.4074 --window east --out out.png
 ```
 
 ---
 
-## 仓库结构
+## 三、要义
+
+其一，**内核离乎界面**。物理与成像在 `packages/lightwall_core`，无 Flutter 之
+依赖，可独测、独跑、独出图。外壳但司其时与用。
+
+其二，**常数必有其出**。凡物理常数，皆注其源（IAU、CIE、ISO、Bodhaine、
+Meeus、Saemundsson、Fisher）。凡拟合之数，则明标其为权宜，且尽量去之。
+
+其三，**简而不失其真**。晴空一种，云量恒零，能见度二十里；非不能繁，而是
+刻意取其可验、可复、可预期。
+
+---
+
+## 四、验证
+
+物理的正确，不凭观感，凭数。
+
+- **九十七则单元测试**：天文、大气、几何、色彩、编解码。
+- **十一景回归门禁**（`tools/light_diag.dart`）：判过曝、死黑、昼夜之序、
+  直射之有无、逐字节之确定性。凡算法一动而失衡，立现。
+- **全天延时**：一日六十帧，并为一刻一秒之影，见光之流转。
+
+```bash
+cd packages/lightwall_core
+dart pub get
+dart test                       # 单元测试
+dart run tools/light_diag.dart  # 光照合理性门禁
+```
+
+---
+
+## 五、目录
 
 ```
 light_wall/
-├── packages/lightwall_core/   纯 Dart 渲染内核（无 Flutter 依赖，可独立测试/CLI）
-│   ├── lib/src/astro.dart         天文与大气
-│   ├── lib/src/scene3d.dart       3D 房间与窗户
-│   ├── lib/src/tracer.dart        逐像素着色
-│   ├── lib/src/retinex.dart       光照/反射率分解
-│   ├── lib/src/material.dart      PBR 材质提取
-│   ├── lib/src/compose.dart       ACES 与相机效果
-│   ├── lib/src/textlayer.dart     年代感与叠字
-│   ├── lib/src/codec.dart         PNG / BMP 编解码
-│   └── bin/render.dart            命令行渲染器
-└── app/                       Flutter Windows 外壳（托盘 / 壁纸 / 面板）
-```
-
-**为什么内核是纯 Dart**：物理与图像算法可以脱离 Flutter 独立单元测试、
-独立跑 CI、独立出图；外壳只负责"什么时候渲染、渲染结果给谁用"。
-
-```bash
-# 不装 Flutter 也能跑：
-cd packages/lightwall_core
-dart pub get && dart test
-dart run bin/render.dart --bg wall.png --out out.png --window east
+├── packages/lightwall_core/    纯 Dart 渲染内核（可独立测试与命令行出图）
+│   ├── lib/src/astro.dart          天文与大气
+│   ├── lib/src/spectrum.dart       太阳光谱 → 线性 sRGB
+│   ├── lib/src/sky.dart            天空亮度分布（CIE 标准晴空）
+│   ├── lib/src/atmosphere.dart     窗面照度、互反射、曝光适应
+│   ├── lib/src/scene3d.dart        三维房间、相机、窗与半影
+│   ├── lib/src/tracer.dart         逐像素着色（Cook–Torrance）
+│   ├── lib/src/retinex.dart        光照与反射率之分解
+│   ├── lib/src/material.dart       材质
+│   ├── lib/src/compose.dart        ACES 影调映射与成像链
+│   ├── lib/src/textlayer.dart      年代感与叠字
+│   └── bin/render.dart             命令行渲染器
+├── app/                        Flutter Windows 外壳（托盘 / 壁纸 / 面板）
+└── docs/                       白皮书与说明
 ```
 
 ---
 
-## 许可
+## 六、致歉与自省
 
-**GNU Affero General Public License v3.0**（见 [LICENSE](LICENSE)）。
-商业授权请联系作者。
+物理之墙，非一蹴可及。项目曾以"高度角→色温→黑体"之拟合上色，以"写死之
+互反射底"充室内，以"经验幂律"拟日轮之大小 —— 皆为自欺。
 
-Copyright (C) 2025 yingo-server and LightWall contributors
+今已尽数改易：太阳之色，由**光谱积分**得之；室内之光，由**双余弦积分**
+得之；日轮之径，回归其几何本值，散射之晕另计其事。法度既明，画自随之。
+
+此为**首个正式公开之版**，仍有所不逮，悉数列于
+[`docs/whitepaper.md`](docs/whitepaper.md) 之"已知局限"与"待决之事"。
+
+---
+
+## 七、许可
+
+**GNU Affero General Public License v3.0**，见 [LICENSE](LICENSE)。
+商业授权，请洽作者。
+
+Copyright © 2025–2026 yingo-server · LightWall contributors
