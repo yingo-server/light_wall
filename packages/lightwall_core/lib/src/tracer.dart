@@ -11,6 +11,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'atmosphere.dart';
 import 'material.dart';
 import 'scene3d.dart';
 
@@ -91,11 +92,13 @@ TraceOutput traceScene(TraceInput input) {
 
   // 窗户入射余弦（只乘一次）
   final winNormal = scene.windowOutwardNormal();
-  final cosInc = math.max(
-      0.0,
-      toSun[0] * winNormal[0] +
-          toSun[1] * winNormal[1] +
-          toSun[2] * winNormal[2]);
+  final cosInc = windowIncidenceCos(toSun, winNormal);
+
+  // 玻璃 Fresnel 透射：掠射时玻璃把大部分光**反射回室外**，透射率骤降
+  // （cos 0.05 → T 0.12）。早期实现用 `max(0.05, cos)` 这种人为下限兜住
+  // 掠射，那只是掩盖问题：真正让掠射趋近于零的是物理（投影面积 ×
+  // 双面玻璃透射），不需要任何下限。
+  final glassT = glassTransmittance(cosInc);
 
   // 直射可见性（穿窗 + 窗格）
   final visible =
@@ -115,11 +118,9 @@ TraceOutput traceScene(TraceInput input) {
   final ambR = input.ambientColor[0],
       ambG = input.ambientColor[1],
       ambB = input.ambientColor[2];
-  // 直射掠射下限：cos→0 时窗玻璃/窗框散射仍留一层微光（5%）。
-  // 没有它，太阳几乎与窗面平行时光斑会"跳崖式"消失（物理上确实是
-  // 趋近零，但视觉上正午光斑突然全无是 bug 感），参考实现同样踩过。
-  final cosIncFloor = math.max(0.05, cosInc);
-  final beamScaleAll = input.beamIrradiance * cosIncFloor * input.exposureEv;
+  // 直射总因子 = 入射余弦（窗的投影面积）× 玻璃透射（Fresnel）
+  final beamScaleAll =
+      input.beamIrradiance * cosInc * glassT * input.exposureEv;
 
   var visibleCount = 0.0;
 

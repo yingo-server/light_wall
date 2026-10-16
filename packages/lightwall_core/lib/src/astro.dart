@@ -394,6 +394,27 @@ List<double> sunColorFromAltitude(double altDeg) {
   return blackbodyToRgb(t);
 }
 
+/// 太阳有效角直径（度）。
+///
+/// 真实太阳盘约 **0.53°**，但那只是"真空里的太阳"。低太阳角时光线穿过
+/// 厚得多的大气，米氏前向散射把太阳从"锐利圆盘"糊成**带光晕的扩展源**：
+/// 地平线附近肉眼可见的日轮光晕可达 2~3°。这一项直接决定光斑边缘的
+/// 柔化程度 —— 忽略它，黄昏与正午的光斑会一样锐（物理错误）。
+///
+/// 模型：Δθ = 0.53° · AM^0.6（AM 为 Kasten-Young 大气质量）
+///   alt=90° → AM=1.0  → 0.53°（正午，最锐）
+///   alt=30° → AM=2.0  → 0.80°
+///   alt=10° → AM=5.6  → 1.48°
+///   alt= 5° → AM=10.3 → 2.07°
+///   alt= 1° → AM=25.9 → 3.00°（封顶）
+double sunAngularDiameterDeg(double altDeg) {
+  if (altDeg <= -6.0) return 3.0; // 暮光：纯漫射，取最宽
+  final a = altDeg < 0.5 ? 0.5 : (altDeg > 90.0 ? 90.0 : altDeg);
+  final am = airMassKastenYoung(a);
+  final d = 0.53 * math.pow(am, 0.60).toDouble();
+  return d.clamp(0.53, 3.0);
+}
+
 /// 暮光天光环境色（线性 RGB）：暮光的天顶已暗，环境光来自
 /// 地平线亮带 —— 比天光更暖更暗。随 |sunAlt| 从暖橙过渡到灰蓝。
 List<double> twilightAmbientColor(double sunAlt) {

@@ -72,6 +72,21 @@ jobs:
         working-directory: app
         run: flutter build windows --release
 
+      # 纯 Dart 渲染 CLI：零 Flutter / 零 GPU 依赖，AOT 编译成独立 exe。
+      # 意义：app 的 --render 路径仍要经过 Flutter 引擎（窗口 + 光栅化器），
+      # 而 Flutter 没有"GPU 不可用就自动退到 CPU"的保证机制；一旦图形环境
+      # 不可用（远程会话 / 无显卡虚拟机 / 驱动异常），连出图都会失败。
+      # 这个 CLI 只链接 Dart runtime，任何环境都能跑。
+      - name: 构建纯 Dart 渲染 CLI（无 Flutter/GPU 依赖）
+        working-directory: packages/lightwall_core
+        run: |
+          $dart = "$env:FLUTTER_ROOT\bin\dart.exe"
+          if (-not (Test-Path $dart)) { $dart = "dart" }
+          & $dart pub get
+          & $dart compile exe bin/render.dart -o "$env:GITHUB_WORKSPACE\lightwall_render.exe"
+          & "$env:GITHUB_WORKSPACE\lightwall_render.exe" --help | Select-Object -First 3
+          Write-Host "CLI 大小: $([math]::Round((Get-Item "$env:GITHUB_WORKSPACE\lightwall_render.exe").Length/1MB,1)) MB"
+
       # 冒烟：核心渲染内核（纯 Dart，不碰 GUI/Flutter 引擎）
       # 不用 light_wall.exe：它是 GUI 子系统程序，在无头 runner 上
       # 渲染完成后 Flutter 引擎的消息循环不退出，Start-Process -Wait
@@ -156,6 +171,9 @@ jobs:
 
       - name: 打包 ZIP
         run: |
+          # 把纯 Dart 渲染 CLI 一并放进发布目录（无 GPU 环境的兜底出图工具）
+          Copy-Item "$env:GITHUB_WORKSPACE\lightwall_render.exe" `
+            -Destination "app\build\windows\x64\runner\Release\" -Force
           Compress-Archive -Path app/build/windows/x64/runner/Release -DestinationPath LightWall-windows-x64.zip
           $sz = (Get-Item LightWall-windows-x64.zip).Length
           Write-Host "ZIP 大小: $([math]::Round($sz/1MB,1)) MB"

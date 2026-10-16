@@ -67,3 +67,32 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string) {
   }
   return utf8_string;
 }
+
+void ReportStartupFailure(const wchar_t* reason) {
+  if (reason == nullptr) {
+    return;
+  }
+  OutputDebugStringW(L"[LightWall] ");
+  OutputDebugStringW(reason);
+  OutputDebugStringW(L"\n");
+
+  wchar_t* appdata = nullptr;
+  size_t len = 0;
+  if (_wdupenv_s(&appdata, &len, L"APPDATA") != 0 || appdata == nullptr) {
+    return;
+  }
+  std::wstring dir(appdata);
+  free(appdata);
+  dir += L"\\LightWall";
+  CreateDirectoryW(dir.c_str(), nullptr);
+
+  std::wstring file = dir + L"\\startup_error.log";
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, file.c_str(), L"a, ccs=UTF-8") == 0 && f != nullptr) {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fwprintf(f, L"[%04d-%02d-%02d %02d:%02d:%02d] %s\n", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond, reason);
+    fclose(f);
+  }
+}

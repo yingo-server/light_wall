@@ -251,6 +251,27 @@ class Scene3D {
   }
 
   /// 窗户在墙面上的范围。
+  /// 窗面到观察墙的**典型距离**（米）。
+  ///
+  /// 半影宽度 = 该距离 × 光源角尺寸 —— 这是把"太阳角直径"换算成
+  /// "屏幕上多少像素"的几何尺度。取窗心到观察墙中心的距离作为代表值
+  /// （半影本就随墙点位置连续变化，这里只需一个正确的量级）。
+  double typicalWindowToWallDistance() {
+    final pl = placement();
+    final double dx, dz;
+    if (pl.wall == Wall.east || pl.wall == Wall.west) {
+      // 窗平面 x = planeCoord，窗的水平轴 u 是 z
+      dx = pl.planeCoord; // 到观察墙 x = 0
+      dz = pl.uCenter; // 窗的水平位置（z）到观察墙 z = 0
+    } else {
+      // 窗平面 z = roomD，窗的水平轴 u 是 x
+      dx = pl.uCenter; // 窗的水平位置（x）到观察墙中线
+      dz = pl.planeCoord; // 到观察墙 z = 0
+    }
+    final dy = pl.vCenter - cfg.cameraH;
+    return math.sqrt(dx * dx + dy * dy + dz * dz).clamp(0.5, 50.0);
+  }
+
   WindowPlacement placement() {
     final halfW = cfg.windowW * 0.5;
     final halfH = cfg.windowH * 0.5;
@@ -311,6 +332,12 @@ class Scene3D {
   ///
   /// [sunDir] 为"太阳射向房间"的方向，对 P 求太阳方向需取负。
   /// [penumbra] 为半影采样半径（相对窗宽），0 表示硬边。
+  ///
+  /// 太阳不是点光源：低太阳角时大气前向散射把日轮糊成 2~3° 的扩展源，
+  /// 墙点看到的是窗面上一个**圆盘**区域而不是单点。这里对该圆盘做
+  /// **面积均匀的黄金角螺旋采样**，取"可见比例"（0~1）作为软遮挡系数：
+  ///   全在窗内 → 1（全亮）· 全被窗框挡 → 0（全暗）· 跨界 → 半影
+  /// 采样数随半径自适应，避免宽带半影只剩 5 级灰度而出现阶梯。
   Float64List windowVisibilityBatch(
     Float64List pts,
     List<double> sunDir, {
@@ -319,16 +346,22 @@ class Scene3D {
     final n = pts.length ~/ 3;
     final out = Float64List(n);
     final toSun = <double>[-sunDir[0], -sunDir[1], -sunDir[2]];
-    final samples = penumbra <= 1e-6 ? 1 : 5;
-    // 5 点采样：中心 + 沿太阳角直径方向的两对偏移
+    final samples = penumbra <= 1e-6
+        ? 1
+        : (penumbra < 0.012 ? 5 : (penumbra < 0.030 ? 9 : 17));
+    const golden = 2.399963229728653; // 黄金角 137.5077°（弧度）
     for (var i = 0; i < n; i++) {
       final o = i * 3;
       var acc = 0.0;
       for (var s = 0; s < samples; s++) {
-        final ox = s == 0 ? 0.0 : 0.0;
-        final oy = s == 0 ? 0.0 : 0.0;
-        if (_visibleThroughWindow(pts, o, toSun, ox, oy, penumbra, s))
-          acc += 1.0;
+        var du = 0.0, dv = 0.0;
+        if (s > 0) {
+          final f = math.sqrt(s / samples); // 半径取 sqrt → 圆盘内面积均匀
+          final th = s * golden;
+          du = f * math.cos(th);
+          dv = f * math.sin(th);
+        }
+        if (_visibleThroughWindow(pts, o, toSun, du, dv, penumbra)) acc += 1.0;
       }
       out[i] = acc / samples;
     }
@@ -336,7 +369,7 @@ class Scene3D {
   }
 
   bool _visibleThroughWindow(Float64List pts, int o, List<double> toSun,
-      double ox, double oy, double penumbra, int sample) {
+      double duRel, double dvRel, double penumbra) {
     final pl = placement();
     final px = pts[o], py = pts[o + 1], pz = pts[o + 2];
     double u, v;
@@ -356,12 +389,10 @@ class Scene3D {
       v = py + t * toSun[1];
     }
     if (penumbra > 1e-6) {
-      // 半影：在窗面上按太阳角直径做小范围抖动采样
+      // 半影：在窗面上按太阳角尺寸做**圆盘**抖动（半径 = penumbra × 窗宽）
       final r = penumbra * (pl.u1 - pl.u0);
-      if (sample == 1) u += r;
-      if (sample == 2) u -= r;
-      if (sample == 3) v += r;
-      if (sample == 4) v -= r;
+      u += duRel * r;
+      v += dvRel * r;
     }
     if (u < pl.u0 || u > pl.u1 || v < pl.v0 || v > pl.v1) return false;
     final uRel = (u - pl.u0) / math.max(pl.u1 - pl.u0, 1e-6);

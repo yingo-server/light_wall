@@ -56,7 +56,7 @@ class RenderSpec {
     this.aged = const AgedParams(),
     this.materialCoupling = 0.0,
     this.look = const LookConfig(),
-    this.penumbra = 0.006,
+    this.penumbraScale = 1.0,
     this.shadowStrength = 0.25,
     this.cinnabar = kCinnabar,
     this.applyAging = true,
@@ -77,7 +77,13 @@ class RenderSpec {
   final AgedParams aged;
   final double materialCoupling;
   final LookConfig look;
-  final double penumbra;
+
+  /// 半影**倍率**（1.0 = 物理值）。
+  ///
+  /// 半影不再是写死的常数，而是由「太阳有效角尺寸 × 窗到观察墙距离」
+  /// 推导（见 [Scene3D.typicalWindowToWallDistance] 与
+  /// [sunAngularDiameterDeg]）。此字段只用于在物理值之上做微调。
+  final double penumbraScale;
   final double shadowStrength;
   final List<double> cinnabar;
   final bool applyAging;
@@ -266,13 +272,27 @@ RenderResult render({
     // 第 7 步的窗口孔径照度场管，tracer 只管直射。
     diffuseIrradiance: 0.0,
     ambientColor: light.color,
-    penumbra: spec.penumbra,
+    penumbra: _penumbraFor(scene, sceneCfg, light) * spec.penumbraScale,
     exposureEv: light.exposureEv,
   ));
 
   // 7. 环境光（天光漫射 × 窗口孔径照度场）
+  //
+  // 孔径照度场需要**太阳方向**：透过窗面不同位置看到的天空亮度不同
+  // （太阳那侧最亮、地平线以下最暗），环境光因此才有方向结构。
+  final altForLight =
+      light.source == LightSource.moon ? light.moonAlt : light.sunAlt;
+  final sunDirRoom = scene.sunToRoomDir(light.sunAz, altForLight);
+  final toSunAmbient = <double>[
+    -sunDirRoom[0],
+    -sunDirRoom[1],
+    -sunDirRoom[2],
+  ];
   final aperture = illuminationField(trace.pts, trace.valid, scene,
-      width: width, height: height);
+      toSun: toSunAmbient,
+      sunAltDeg: altForLight,
+      width: width,
+      height: height);
   final ambientRgb = Float32List(n * 3);
   // 【真 bug】暮光/夜空的 ambientColor 此前直接复用 light.color
   // （暮光=地平线方向的太阳色，已经偏暖），旧实现还把暮光漫射
@@ -378,6 +398,25 @@ RenderResult render({
       'exposure_ev': light.exposureEv,
     },
   );
+}
+
+/// 半影采样半径（相对窗宽）—— 由**物理量**推导，不是写死的数字。
+///
+/// 墙点看到的光源张角 = 太阳有效角尺寸 Δθ（低太阳角时被大气前向散射
+/// 展宽，见 [sunAngularDiameterDeg]）。该角在窗面上的投影直径 ≈ D·Δθ，
+/// D 为窗到观察墙的典型距离；抖动半径 r = D·tan(Δθ/2)。
+/// 归一化到窗宽即得采样半径。
+///
+/// 例（D ≈ 2.2 m，窗宽 1.2 m）：
+///   正午 Δθ = 0.53° → r ≈ 10 mm → penumbra ≈ 0.0085（边缘锐利）
+///   日落 Δθ = 3.00° → r ≈ 58 mm → penumbra ≈ 0.048（明显柔化，窗格糊开）
+double _penumbraFor(Scene3D scene, SceneConfig sceneCfg, LightInfo light) {
+  final alt = light.source == LightSource.moon ? light.moonAlt : light.sunAlt;
+  final angDeg = sunAngularDiameterDeg(alt);
+  final halfRad = angDeg * kDeg * 0.5;
+  final d = scene.typicalWindowToWallDistance();
+  final r = d * math.tan(halfRad);
+  return (r / math.max(sceneCfg.windowW, 1e-3)).clamp(0.0, 0.25);
 }
 
 double _mean(Float32List arr) {

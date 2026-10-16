@@ -193,7 +193,11 @@ Uint8List _resizeRgb(Uint8List src, int sw, int sh, int dw, int dh) {
 }
 
 const String _usage = '''
-LightWall 命令行渲染器
+LightWall 命令行渲染器（纯 Dart · 零 Flutter / GPU 依赖）
+
+  在任何环境都能跑：不创建窗口、不链接 Flutter、不需要显卡驱动。
+  图形环境不可用时（远程会话 / 无显卡虚拟机），用它代替
+  light_wall.exe --render 出图。
 
   --bg <path>           底图路径（必需，PNG）
   --out <path>          输出 PNG（默认 out.png）

@@ -10,6 +10,7 @@ export 'src/mathx.dart';
 export 'src/pipeline.dart';
 export 'src/retinex.dart';
 export 'src/scene3d.dart';
+export 'src/sky.dart';
 export 'src/textlayer.dart';
 export 'src/tracer.dart';
 export 'src/template.dart';

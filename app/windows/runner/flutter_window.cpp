@@ -22,6 +22,12 @@ bool FlutterWindow::OnCreate() {
       frame.right - frame.left, frame.bottom - frame.top, project_);
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+    // 引擎或视图创建失败：图形环境不可用（无 GPU / 远程会话 / 驱动异常），
+    // 或 assets 缺失。光照渲染本身是纯 Dart、零 GPU 依赖，仅出图请改用
+    // 随包提供的 `lightwall_render.exe`。
+    ReportStartupFailure(
+        L"Flutter 引擎/视图创建失败：图形环境不可用（无 GPU / 远程会话 / "
+        L"驱动异常）。仅出图请改用 lightwall_render.exe。");
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());

@@ -11,7 +11,9 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'mathx.dart';
 import 'scene3d.dart';
+import 'sky.dart';
 
 /// 室内平均反射率（白灰墙面 + 水泥地）。
 const double kRoomAlbedo = 0.55;
@@ -52,22 +54,46 @@ double eyeExposureEv(double illuminance,
   return ev.clamp(0.25, 4.0);
 }
 
+/// 方向上的**天空相对辐亮度**（相对天顶 = 1，含地平线上下的分别处理）。
+///
+/// 窗外不是"一片均匀的亮"：
+///   · 地平线以上 → CIE 晴空亮度分布（太阳附近最亮，背面最暗）
+///   · 地平线以下 → 看到的是室外地面/建筑立面，亮度约为地面反照率
+///     对天光的反射（远低于天空本身），这也是真实照片里窗下半部
+///     明显比上半部暗的原因。
+///   · 地平线附近 → 平滑过渡（否则会出现一条硬边）
+double _skyRadiance(
+    double dirY, double gammaRad, double sunZenithDeg, double sunAltDeg) {
+  // 地平线以下：室外地面的反射亮度（≈ 反照率 × 天光 / π，归一化后约 0.1）
+  const belowHorizon = 0.12;
+  const blend = 0.06; // 地平线附近的过渡带（方向余弦）
+  if (dirY <= -blend) return belowHorizon;
+  final zenithRad = math.acos(dirY.clamp(-1.0, 1.0));
+  final sky = skyLuminanceFactor(
+      zenithRad.clamp(0.0, math.pi * 0.5), gammaRad, sunZenithDeg, sunAltDeg);
+  if (dirY >= blend) return sky;
+  final t = (dirY + blend) / (2 * blend); // 0 → 下, 1 → 上
+  return belowHorizon * (1 - t) + sky * t;
+}
+
 /// 窗户开口的照度场 —— 把窗户当**矩形面光源**做面积分。
 ///
 /// 物理：有限大面光源对墙点的照度
-///     E(P) = ∫∫_窗面  L · cosθ_win · cosθ_wall / r²  dA
-/// 用 samplesY × samplesZ 采样求和近似。归一化到均值 1（只重新分配光，
-/// 不改变总曝光）。
+///     E(P) = ∫∫_窗面  L(dir) · cosθ_win · cosθ_wall / r²  dA
 ///
-/// ⚠ 这个"面光源积分"是室内明暗过渡的关键：若用窗心单点（点光源），
-/// 1/r² 衰减过陡，会把照度场做成"以窗心为圆心的径向光晕"；
-/// 真实窗户是扩展光源，照度场是**沿离窗方向缓慢下降的软场**。
+/// 关键在 **L(dir)**：它不是常数。透过窗面采样点 Q 看到的窗外方向
+/// dir = (Q−P)/|Q−P| 决定该处亮度 —— 太阳那侧的窗户进来更多光，
+/// 天顶方向偏蓝偏亮，地平线以下（室外地面/建筑）明显更暗。
+/// 早期实现把 L 当成常数 1，环境光因此没有任何方向结构：像一层平灰，
+/// 与直射光斑硬叠在一起。
 Float64List apertureIlluminance(
   Float64List pts,
   Float64List valid,
   Scene3D scene, {
-  int samplesY = 3,
-  int samplesZ = 3,
+  List<double>? toSun,
+  double sunAltDeg = 45.0,
+  int samplesU = 3,
+  int samplesV = 3,
   int stride = 1,
 }) {
   final pl = scene.placement();
@@ -77,7 +103,10 @@ Float64List apertureIlluminance(
   // 窗面在世界坐标下的矩形（东/西墙为 (z,y)，后墙为 (x,y)）
   final u0 = pl.u0, u1 = pl.u1, v0 = pl.v0, v1 = pl.v1;
   final plane = pl.planeCoord;
-  final dA = ((u1 - u0).abs() * (v1 - v0).abs()) / (samplesY * samplesZ);
+  final dA = ((u1 - u0).abs() * (v1 - v0).abs()) / (samplesU * samplesV);
+
+  final sunZenithDeg = (90.0 - sunAltDeg).clamp(0.0, 90.0);
+  final ts = toSun ?? const <double>[0.0, 1.0, 0.0];
 
   // 逐点（支持按 stride 跳点，随后上采样）
   for (var i = 0; i < n; i += stride) {
@@ -88,10 +117,10 @@ Float64List apertureIlluminance(
     final py = pts[o + 1].clamp(0.0, scene.cfg.roomH);
     final pz = pts[o + 2].clamp(0.0, scene.cfg.roomD);
     var acc = 0.0;
-    for (var si = 0; si < samplesY; si++) {
-      final u = u0 + (u1 - u0) * (si + 0.5) / samplesY;
-      for (var sj = 0; sj < samplesZ; sj++) {
-        final v = v0 + (v1 - v0) * (sj + 0.5) / samplesZ;
+    for (var si = 0; si < samplesU; si++) {
+      final u = u0 + (u1 - u0) * (si + 0.5) / samplesU;
+      for (var sj = 0; sj < samplesV; sj++) {
+        final v = v0 + (v1 - v0) * (sj + 0.5) / samplesV;
         double dx, dy, dz, cosWin;
         if (pl.wall == Wall.east || pl.wall == Wall.west) {
           dx = plane - px;
@@ -106,8 +135,17 @@ Float64List apertureIlluminance(
         }
         final r2 = dx * dx + dy * dy + dz * dz;
         final r = math.sqrt(math.max(r2, 1e-6));
-        final cosWall = dz.abs() / r; // 观察墙法线为 +Z
-        acc += dA * (cosWin / r) * cosWall / r2;
+        final inv = 1.0 / r;
+        final cosWall = dz.abs() * inv; // 观察墙法线为 +Z
+
+        // 透过该窗面采样点看到的窗外方向（P → Q，继续延伸到室外）
+        final dirX = dx * inv, dirY = dy * inv, dirZ = dz * inv;
+        final cosG =
+            (dirX * ts[0] + dirY * ts[1] + dirZ * ts[2]).clamp(-1.0, 1.0);
+        final lum =
+            _skyRadiance(dirY, math.acos(cosG), sunZenithDeg, sunAltDeg);
+
+        acc += dA * (cosWin * inv) * cosWall * inv2(r2) * lum;
       }
     }
     e[i] = acc;
@@ -130,6 +168,9 @@ Float64List apertureIlluminance(
   return e;
 }
 
+/// 1/r²（内联，避免多次除法）
+double inv2(double r2) => 1.0 / math.max(r2, 1e-12);
+
 /// 室内多次互反射的"均匀底"：k = ρ/(1−ρ)。
 ///
 /// ρ=0.55 的白灰房间 → k ≈ 1.22：光在墙面/地面之间反复弹射，
@@ -147,6 +188,8 @@ Float64List illuminationField(
   Float64List pts,
   Float64List valid,
   Scene3D scene, {
+  List<double>? toSun,
+  double sunAltDeg = 45.0,
   int width = 0,
   int height = 0,
   int maxWork = 512,
@@ -174,7 +217,7 @@ Float64List illuminationField(
           subPts[di * 3 + 2] = pts[si * 3 + 2];
         }
       }
-      final low = _fieldFrom(subPts, subValid, scene, ww, wh);
+      final low = _fieldFrom(subPts, subValid, scene, ww, wh, toSun, sunAltDeg);
       // 上采样（双线性）
       final out = Float64List(width * height);
       for (var y = 0; y < height; y++) {
@@ -200,17 +243,56 @@ Float64List illuminationField(
       return out;
     }
   }
-  return _fieldFrom(pts, valid, scene, width, height);
+  return _fieldFrom(pts, valid, scene, width, height, toSun, sunAltDeg);
 }
 
-Float64List _fieldFrom(
-    Float64List pts, Float64List valid, Scene3D scene, int width, int height) {
-  final e = apertureIlluminance(pts, valid, scene);
+/// 照度场合成：窗口直入 + 互反射。
+///
+/// **互反射不是常数底，而是一阶 Radiosity 近似**：
+///     E_total = E_window + ρ/(1−ρ) · ⟨E_window⟩_room
+/// 其中 ⟨⟩_room 是直入场在**房间尺度**上的低频版本 —— 光在室内多次弹射后
+/// 细节被抹平，但"离窗远近"的大尺度结构保留下来（靠窗处互反射同样更强）。
+///
+/// 早期实现用 `(e + k)/(1+k)` 把常数 k 直接混进去：直入的空间对比度被
+/// 摊薄一半以上，环境场于是退化成一片平灰，直射光斑像"贴"在上面。
+///
+/// 最后仍归一化到均值 1：绝对量级由 ambScale 决定，本函数只负责**相对分布**。
+Float64List _fieldFrom(Float64List pts, Float64List valid, Scene3D scene,
+    int width, int height, List<double>? toSun, double sunAltDeg) {
+  final e = apertureIlluminance(pts, valid, scene,
+      toSun: toSun, sunAltDeg: sunAltDeg);
   final k = interreflectionFloor();
+
+  // blurGray 作用在 Float32List 上（与管线其余部分一致）
+  final Float32List bounced;
+  if (width > 0 && height > 0) {
+    // 平滑半径 = 房间深度的一部分（像素）—— 一次弹射的平均自由程量级
+    final pxPerMeter = height / math.max(scene.cfg.roomH, 0.1);
+    final rPx = (scene.cfg.roomD * 0.30 * pxPerMeter)
+        .clamp(2.0, math.min(width, height) * 0.5);
+    bounced = blurGray(
+        Float32List.fromList(e.map((v) => v.toDouble()).toList()),
+        width,
+        height,
+        rPx);
+  } else {
+    bounced = Float32List.fromList(e);
+  }
+
   final out = Float64List(e.length);
+  var sum = 0.0;
+  var cnt = 0;
   for (var i = 0; i < e.length; i++) {
-    final f = (e[i] + k) / (1.0 + k);
-    out[i] = f.clamp(1e-4, 1e4);
+    final v = e[i] + k * bounced[i];
+    out[i] = v;
+    if (valid[i] > 0) {
+      sum += v;
+      cnt++;
+    }
+  }
+  final norm = (cnt > 0 && sum > 1e-12) ? cnt / sum : 1.0;
+  for (var i = 0; i < out.length; i++) {
+    out[i] = (out[i] * norm).clamp(1e-4, 1e4);
   }
   return out;
 }
@@ -233,3 +315,46 @@ double windowIncidenceCos(List<double> toSun, List<double> windowNormal) =>
         toSun[0] * windowNormal[0] +
             toSun[1] * windowNormal[1] +
             toSun[2] * windowNormal[2]);
+
+// ═══════════════════════════════════════════════════════════════════
+// 窗玻璃：Fresnel 角依赖透射
+// ═══════════════════════════════════════════════════════════════════
+
+/// 普通窗玻璃折射率（钠钙玻璃 ≈ 1.52）。
+const double kGlassIor = 1.52;
+
+/// 垂直入射的界面反射率 F0 = ((n−1)/(n+1))² ≈ 0.0426（n = 1.52）。
+double get kGlassF0 {
+  final r = (kGlassIor - 1.0) / (kGlassIor + 1.0);
+  return r * r;
+}
+
+/// 单界面 Fresnel 反射率（Schlick 近似）。
+double glassReflectance(double cosTheta) {
+  final c = cosTheta.clamp(0.0, 1.0);
+  final f0 = kGlassF0;
+  return f0 + (1.0 - f0) * math.pow(1.0 - c, 5).toDouble();
+}
+
+/// **双面玻璃板的总透射率**（两个界面的多次反射按几何级数求和）。
+///
+/// 真实窗户是两片"空气-玻璃"界面：光进入时反射一次、穿出时再反射一次，
+/// 中间的多次来回反射求和：
+///     T = (1−R)² / (1 − R²) = (1−R)/(1+R)
+///
+/// 这条曲线是**低太阳角时窗户会变暗**的物理原因，早期实现完全没有：
+///   cosθ=1.00 → R=0.043 → T=0.918（正对窗：几乎全透）
+///   cosθ=0.50 → R=0.073 → T=0.864
+///   cosθ=0.20 → R=0.361 → T=0.470（斜射：一半被反射掉）
+///   cosθ=0.05 → R=0.784 → T=0.121（掠射：几乎全反射）
+///
+/// 即掠射时不只是"投影面积变小"，玻璃本身也把光反射回室外 ——
+/// 两项叠加让掠射直射正确趋近于零，不需要任何人为下限。
+double glassTransmittance(double cosTheta, {double ior = kGlassIor}) {
+  final c = cosTheta.clamp(0.0, 1.0);
+  if (c <= 0.0) return 0.0;
+  final r0 = (ior - 1.0) / (ior + 1.0);
+  final f0 = r0 * r0;
+  final r = f0 + (1.0 - f0) * math.pow(1.0 - c, 5).toDouble();
+  return ((1.0 - r) / (1.0 + r)).clamp(0.0, 1.0);
+}
