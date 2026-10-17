@@ -1,26 +1,94 @@
-name: CI
+name: CI · Test & Timelapse
 
+# 内核门禁（分析/测试/光照诊断）+ 全天延时渲染。
+# 延时部分全参数化：帧数与时长二选一（duration×fps 自动换算帧数，
+# 时间点在 24 h 内等间隔抽样）；丙类场景参数可选开启；
+# publish_video=true 时把 mp4 + 关键帧拼图**追加**到最新 Release。
 on:
   push:
     branches: [main]
     paths-ignore: ['docs/**', '*.md']
   workflow_dispatch:
     inputs:
+      # ── 延时几何 ──
       frames:
-        description: '延时帧数（每天均分）'
+        description: '帧数（>0 直接用；=0 按 duration×fps 换算）'
         default: '60'
+        required: false
+      duration:
+        description: '目标视频时长（秒；frames=0 时生效）'
+        default: '60'
+        required: false
+      fps:
+        description: '合成帧率 fps（同时参与帧数换算与视频合成）'
+        default: '1'
         required: false
       size:
         description: '帧尺寸 宽x高'
         default: '960x540'
         required: false
+      # ── 场景 ──
       date:
         description: '日期 YYYY-MM-DD'
         default: '2025-12-21'
         required: false
       window:
-        description: '窗户朝向 east/west/south/north'
+        description: '窗户朝向 n/ne/e/se/s/sw/w/nw'
         default: 'east'
+        required: false
+      lat:
+        description: '纬度（北正）'
+        default: '39.9042'
+        required: false
+      lon:
+        description: '经度（东正）'
+        default: '116.4074'
+        required: false
+      tz:
+        description: '时区（ISO 偏移）'
+        default: '+08:00'
+        required: false
+      text:
+        description: '墙面题字'
+        default: '朝闻道'
+        required: false
+      # ── 丙类可选（默认全关）──
+      cloud:
+        description: '云量 0~1（0=晴天）'
+        default: '0'
+        required: false
+      wet_ground:
+        description: '雨湿地面 true/false（配合云量）'
+        default: 'false'
+        required: false
+      indoor_light:
+        description: '室内灯相对强度（0=关）'
+        default: '0'
+        required: false
+      city_glow:
+        description: '城市光污染（0=关；远郊0.1/近郊0.5/市区2）'
+        default: '0'
+        required: false
+      absolute_lux:
+        description: '绝对量纲标定 lux（空=自动曝光）'
+        default: ''
+        required: false
+      visibility:
+        description: '大气能见度（米）'
+        default: '20000'
+        required: false
+      # ── 运行与发布 ──
+      jobs:
+        description: '并行渲染进程数'
+        default: '6'
+        required: false
+      verbose:
+        description: '逐帧详细日志（完整命令行+stderr）'
+        default: 'false'
+        required: false
+      publish_video:
+        description: '追加 mp4/拼图到最新 Release（需已有 Release）'
+        default: 'false'
         required: false
 
 permissions:
@@ -31,14 +99,10 @@ env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  # ══════════════════════════════════════════════════════════════
-  # ① 内核：静态检查 + 单元测试 + AOT 编译 + 全天延时出图 + 视频
-  #    全部在 CI 上跑（本机性能有限，重活都交给这里）
-  # ══════════════════════════════════════════════════════════════
   core:
     name: 内核测试与全天延时
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -78,17 +142,19 @@ jobs:
           sudo apt-get install -y -qq ffmpeg fonts-noto-cjk
           fc-list :lang=zh | head -3
 
-      - name: 生成文字蒙版（朝闻道）
+      - name: 生成文字蒙版
         run: |
           python3 -m pip install --quiet --upgrade pip
           python3 -m pip install --quiet pillow
           SIZE="${{ github.event.inputs.size || '960x540' }}"
           W="${SIZE%x*}"; H="${SIZE#*x}"
           echo "蒙版尺寸 $W x $H"
-          python3 tools/make_text_mask.py --text "朝闻道" --out dist/mask.png \
-            --width "$W" --height "$H" --font-ratio 0.18 --ssaa 2
+          python3 tools/make_text_mask.py \
+            --text "${{ github.event.inputs.text || '朝闻道' }}" \
+            --out dist/mask.png --width "$W" --height "$H" \
+            --font-ratio 0.18 --ssaa 2
 
-      - name: 全天延时渲染（${{ github.event.inputs.frames || '60' }} 帧 · 并行）
+      - name: 全天延时渲染（并行）
         run: |
           python3 tools/timelapse.py \
             --engine dist/render \
@@ -96,16 +162,29 @@ jobs:
             --mask dist/mask.png \
             --out-dir dist/timelapse \
             --frames ${{ github.event.inputs.frames || '60' }} \
+            --duration ${{ github.event.inputs.duration || '60' }} \
+            --fps ${{ github.event.inputs.fps || '1' }} \
             --size ${{ github.event.inputs.size || '960x540' }} \
             --date ${{ github.event.inputs.date || '2025-12-21' }} \
+            --lat ${{ github.event.inputs.lat || '39.9042' }} \
+            --lon ${{ github.event.inputs.lon || '116.4074' }} \
+            --tz "${{ github.event.inputs.tz || '+08:00' }}" \
             --window ${{ github.event.inputs.window || 'east' }} \
-            --jobs 6 \
-            --text "朝闻道"
+            --cloud ${{ github.event.inputs.cloud || '0' }} \
+            --indoor-light ${{ github.event.inputs.indoor_light || '0' }} \
+            --city-glow ${{ github.event.inputs.city_glow || '0' }} \
+            --visibility ${{ github.event.inputs.visibility || '20000' }} \
+            --absolute-lux "${{ github.event.inputs.absolute_lux }}" \
+            --text "${{ github.event.inputs.text || '朝闻道' }}" \
+            --jobs ${{ github.event.inputs.jobs || '6' }} \
+            ${{ github.event.inputs.wet_ground == 'true' && '--wet-ground' || '' }} \
+            ${{ github.event.inputs.verbose == 'true' && '--verbose' || '' }}
 
-      - name: 合成视频（1 帧 = 1 秒）
+      - name: 合成视频
         if: always()
         run: |
-          ffmpeg -y -framerate 1 -i dist/timelapse/frames/f%04d.png \
+          FPS="${{ github.event.inputs.fps || '1' }}"
+          ffmpeg -y -framerate "$FPS" -i dist/timelapse/frames/f%04d.png \
             -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
             -c:v libx264 -pix_fmt yuv420p -crf 20 -r 30 \
             -movflags +faststart dist/timelapse/lightwall_day.mp4
@@ -159,12 +238,40 @@ jobs:
           {
             echo "## 内核与延时构建"
             echo ""
-            echo "- 帧数：${{ github.event.inputs.frames || '60' }}"
+            echo "- 帧数：${{ github.event.inputs.frames || '60' }}（或时长 ${{ github.event.inputs.duration || '60' }}s × ${{ github.event.inputs.fps || '1' }}fps 换算）"
             echo "- 尺寸：${{ github.event.inputs.size || '960x540' }}"
-            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }}"
-            echo "- 窗户：${{ github.event.inputs.window || 'east' }}"
+            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }} · 窗户：${{ github.event.inputs.window || 'east' }} · 时区：${{ github.event.inputs.tz || '+08:00' }}"
+            echo "- 丙类：cloud=${{ github.event.inputs.cloud || '0' }} wet=${{ github.event.inputs.wet_ground || 'false' }} indoor=${{ github.event.inputs.indoor_light || '0' }} city=${{ github.event.inputs.city_glow || '0' }} lux=${{ github.event.inputs.absolute_lux || 'auto' }}"
             echo ""
             echo '```'
             tail -25 dist/timelapse/timeline.tsv 2>/dev/null || echo "无时间线"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 可选：把视频产物追加到最新 Release（不新建 tag、不覆盖既有资产）──
+  publish:
+    name: 追加视频到最新 Release
+    needs: core
+    if: always() && needs.core.result == 'success' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish_video == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: timelapse-video
+          path: dist/video
+      - name: 定位最新 Release 并追加
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)"
+          echo "最新 Release: $TAG"
+          # 时间戳命名避免覆盖历史视频
+          STAMP="$(date -u +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+          mkdir -p up
+          cp dist/video/lightwall_day.mp4 "up/lightwall_day_${STAMP}.mp4"
+          cp dist/video/contact_sheet.png "up/contact_sheet_${STAMP}.png" 2>/dev/null || true
+          cp dist/video/timeline.tsv "up/timeline_${STAMP}.tsv" 2>/dev/null || true
+          gh release upload "$TAG" up/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | tail -5

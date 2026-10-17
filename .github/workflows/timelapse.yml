@@ -1,31 +1,72 @@
-name: Timelapse
+name: Timelapse · 全天延时（毛体）
 
-# 全天延时：以 N 帧均分 24 小时，渲染后按指定帧率合成视频。
-# 文字默认用【毛体】（Liu Jian Mao Cao，开源草书，近毛体）生成蒙版。
+# 专用延时渲染（含毛体题字）。帧数与时长二选一（duration×fps 自动换算帧数，
+# 24 h 内等间隔抽样）；丙类场景参数可选开启；publish_video=true 时把
+# mp4 + 关键帧拼图追加到最新 Release（不新建 tag、不覆盖既有资产）。
 on:
   workflow_dispatch:
     inputs:
+      # ── 延时几何 ──
       frames:
-        description: '帧数'
+        description: '帧数（>0 直接用；=0 按 duration×fps 换算）'
         default: '600'
+      duration:
+        description: '目标视频时长（秒；frames=0 时生效）'
+        default: '300'
       fps:
-        description: '合成帧率（帧/秒）'
+        description: '合成帧率 fps'
         default: '2'
       size:
         description: '帧尺寸 宽x高'
         default: '640x360'
+      # ── 场景 ──
       date:
         description: '日期 YYYY-MM-DD'
         default: '2025-12-21'
       window:
-        description: '窗户朝向 east/west/south/north'
+        description: '窗户朝向 n/ne/e/se/s/sw/w/nw'
         default: 'east'
+      lat:
+        description: '纬度（北正）'
+        default: '39.9042'
+      lon:
+        description: '经度（东正）'
+        default: '116.4074'
+      tz:
+        description: '时区（ISO 偏移）'
+        default: '+08:00'
       text:
         description: '墙面题字'
         default: '千万不要忘记,阶级斗争！'
+      # ── 丙类可选（默认全关）──
+      cloud:
+        description: '云量 0~1（0=晴天）'
+        default: '0'
+      wet_ground:
+        description: '雨湿地面 true/false'
+        default: 'false'
+      indoor_light:
+        description: '室内灯相对强度（0=关）'
+        default: '0'
+      city_glow:
+        description: '城市光污染（0=关；市区≈2）'
+        default: '0'
+      absolute_lux:
+        description: '绝对量纲标定 lux（空=自动曝光）'
+        default: ''
+      visibility:
+        description: '大气能见度（米）'
+        default: '20000'
+      # ── 运行与发布 ──
       jobs:
         description: '并行渲染进程数'
         default: '4'
+      verbose:
+        description: '逐帧详细日志'
+        default: 'false'
+      publish_video:
+        description: '追加 mp4/拼图到最新 Release'
+        default: 'false'
 
 permissions:
   contents: read
@@ -39,7 +80,7 @@ jobs:
   timelapse:
     name: 全天延时（${{ github.event.inputs.frames || '600' }} 帧）
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +120,7 @@ jobs:
             --out dist/mask.png --width "$W" --height "$H" \
             --font-ratio 0.15 --ssaa 2 --font "$RUNNER_TEMP/mao.ttf"
 
-      - name: 全天延时渲染
+      - name: 全天延时渲染（并行）
         run: |
           python3 tools/timelapse.py \
             --engine dist/render \
@@ -87,13 +128,25 @@ jobs:
             --mask dist/mask.png \
             --out-dir dist/timelapse \
             --frames ${{ github.event.inputs.frames || '600' }} \
+            --duration ${{ github.event.inputs.duration || '300' }} \
+            --fps ${{ github.event.inputs.fps || '2' }} \
             --size ${{ github.event.inputs.size || '640x360' }} \
             --date ${{ github.event.inputs.date || '2025-12-21' }} \
+            --lat ${{ github.event.inputs.lat || '39.9042' }} \
+            --lon ${{ github.event.inputs.lon || '116.4074' }} \
+            --tz "${{ github.event.inputs.tz || '+08:00' }}" \
             --window ${{ github.event.inputs.window || 'east' }} \
+            --cloud ${{ github.event.inputs.cloud || '0' }} \
+            --indoor-light ${{ github.event.inputs.indoor_light || '0' }} \
+            --city-glow ${{ github.event.inputs.city_glow || '0' }} \
+            --visibility ${{ github.event.inputs.visibility || '20000' }} \
+            --absolute-lux "${{ github.event.inputs.absolute_lux }}" \
+            --text "${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}" \
             --jobs ${{ github.event.inputs.jobs || '4' }} \
-            --text "${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}"
+            ${{ github.event.inputs.wet_ground == 'true' && '--wet-ground' || '' }} \
+            ${{ github.event.inputs.verbose == 'true' && '--verbose' || '' }}
 
-      - name: 合成视频（${{ github.event.inputs.fps || '2' }} 帧/秒）
+      - name: 合成视频
         if: always()
         run: |
           FPS="${{ github.event.inputs.fps || '2' }}"
@@ -135,9 +188,10 @@ jobs:
             set -- $spec
             t="$1"; win="$2"
             "$D" --bg assets/backgrounds/microcement.png --text-alpha dist/mask.png \
-              --lat 39.9042 --lon 116.4074 --window "$win" \
-              --width 1280 --height 720 \
-              --time "${{ github.event.inputs.date || '2025-12-21' }}T${t}:00+08:00" \
+              --lat ${{ github.event.inputs.lat || '39.9042' }} --lon ${{ github.event.inputs.lon || '116.4074' }} \
+              --window "$win" --width 1280 --height 720 \
+              --time "${{ github.event.inputs.date || '2025-12-21' }}T${t}:00${{ github.event.inputs.tz || '+08:00' }}" \
+              --cloud ${{ github.event.inputs.cloud || '0' }} \
               --out "dist/stills/still_${win}_${t}.png" || true
           done
           ls -la dist/stills
@@ -150,6 +204,7 @@ jobs:
             dist/timelapse/lightwall_day.mp4
             dist/timelapse/contact_sheet.png
             dist/timelapse/timeline.json
+            dist/timelapse/timeline.tsv
           retention-days: 30
 
       - uses: actions/upload-artifact@v4
@@ -164,13 +219,40 @@ jobs:
         run: |
           {
             echo "## 全天延时"
-            echo "- 帧数：${{ github.event.inputs.frames || '600' }}"
-            echo "- 帧率：${{ github.event.inputs.fps || '2' }} fps（总时长约 $(( ${{ github.event.inputs.frames || '600' }} / ${{ github.event.inputs.fps || '2' }} )) 秒）"
+            echo "- 帧数：${{ github.event.inputs.frames || '600' }}（或时长 ${{ github.event.inputs.duration || '300' }}s × ${{ github.event.inputs.fps || '2' }}fps 换算）"
             echo "- 尺寸：${{ github.event.inputs.size || '640x360' }}"
-            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }} · 窗户：${{ github.event.inputs.window || 'east' }}"
+            echo "- 日期：${{ github.event.inputs.date || '2025-12-21' }} · 窗户：${{ github.event.inputs.window || 'east' }} · 时区：${{ github.event.inputs.tz || '+08:00' }}"
+            echo "- 丙类：cloud=${{ github.event.inputs.cloud || '0' }} wet=${{ github.event.inputs.wet_ground || 'false' }} indoor=${{ github.event.inputs.indoor_light || '0' }} city=${{ github.event.inputs.city_glow || '0' }} lux=${{ github.event.inputs.absolute_lux || 'auto' }}"
             echo "- 题字：${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}（毛体）"
             echo ""
             echo '```'
             tail -20 dist/timelapse/timeline.tsv 2>/dev/null || echo "无时间线"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 可选：追加到最新 Release（时间戳命名，不覆盖既有资产）──
+  publish:
+    name: 追加视频到最新 Release
+    needs: timelapse
+    if: always() && needs.timelapse.result == 'success' && github.event.inputs.publish_video == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: timelapse-video
+          path: dist/video
+      - name: 追加上传
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)"
+          echo "最新 Release: $TAG"
+          STAMP="$(date -u +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+          mkdir -p up
+          cp dist/video/lightwall_day.mp4 "up/lightwall_day_${STAMP}.mp4"
+          cp dist/video/contact_sheet.png "up/contact_sheet_${STAMP}.png" 2>/dev/null || true
+          cp dist/video/timeline.tsv "up/timeline_${STAMP}.tsv" 2>/dev/null || true
+          gh release upload "$TAG" up/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | tail -5

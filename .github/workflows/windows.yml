@@ -1,4 +1,4 @@
-name: Windows
+name: Windows · 桌面构建
 
 on:
   push:
@@ -13,8 +13,14 @@ on:
         description: '是否发布 Release'
         default: 'false'
       tag:
-        description: 'Release 版本号（如 v1.1.0）'
-        default: 'v1.1.0'
+        description: 'Release 版本号（如 v1.2.5）'
+        default: 'v1.2.5'
+      run_tests:
+        description: '是否跑 analyze/test/门禁（快速冒烟可关）'
+        default: 'true'
+      verbose_log:
+        description: '输出详细构建日志（flutter -v）'
+        default: 'false'
 
 permissions:
   contents: write
@@ -52,10 +58,12 @@ jobs:
         run: flutter pub get
 
       - name: 静态检查
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: app
         run: flutter analyze --no-fatal-infos
 
       - name: 单元测试
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: app
         run: |
           # PowerShell 的 || 不会重置 $LASTEXITCODE：测试目录不存在时
@@ -70,7 +78,8 @@ jobs:
 
       - name: 构建 Windows（Release）
         working-directory: app
-        run: flutter build windows --release
+        run: |
+          if ("${{ github.event.inputs.verbose_log }}" -eq "true") { flutter build windows --release -v } else { flutter build windows --release }
 
       # 纯 Dart 渲染 CLI：零 Flutter / 零 GPU 依赖，AOT 编译成独立 exe。
       # 意义：app 的 --render 路径仍要经过 Flutter 引擎（窗口 + 光栅化器），
@@ -92,6 +101,7 @@ jobs:
       # 渲染完成后 Flutter 引擎的消息循环不退出，Start-Process -Wait
       # 会永远挂住（实测 >16 min）。核心包是纯 Dart，AOT 跑得通。
       - name: 冒烟：核心渲染内核
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: packages/lightwall_core
         run: |
           dart pub get
@@ -190,8 +200,8 @@ jobs:
         with:
           # 版本号由 dispatch 输入决定（默认 v1.1.0）—— 此前写死 v1.0.0，
           # 发第二个版本会静默覆盖旧 Tag，是危险的默认值。
-          tag_name: ${{ github.event.inputs.tag || 'v1.1.0' }}
-          name: LightWall ${{ github.event.inputs.tag || 'v1.1.0' }}
+          tag_name: ${{ github.event.inputs.tag || 'v1.2.5' }}
+          name: LightWall ${{ github.event.inputs.tag || 'v1.2.5' }}
           prerelease: false
           files: LightWall-windows-x64.zip
           body_path: release_notes.md

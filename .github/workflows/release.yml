@@ -1,4 +1,4 @@
-name: Release
+name: Release · 多平台发布
 
 # 正式发布：多目标、多架构
 #   · 命令行渲染器（纯 Dart，AOT）：Windows / Linux × x64 / arm64
@@ -16,6 +16,12 @@ on:
       build_desktop_arm64:
         description: '是否尝试构建 Windows arm64 桌面版（需 arm64 runner）'
         default: 'true'
+      run_tests:
+        description: '发布前是否跑测试与门禁（快速重发可关）'
+        default: 'true'
+      attach_mp4:
+        description: '同时把最新延时视频追加到本 Release（若有 artifact）'
+        default: 'false'
   push:
     tags: ['v*']
 
@@ -61,6 +67,7 @@ jobs:
         working-directory: packages/lightwall_core
         run: dart pub get && dart analyze
       - name: 单元测试 + 光照门禁
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: packages/lightwall_core
         run: |
           dart test
@@ -69,6 +76,7 @@ jobs:
         working-directory: packages/lightwall_core
         run: dart compile exe bin/render.dart -o "${{ github.workspace }}/${{ matrix.out }}"
       - name: 冒烟
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: packages/lightwall_core
         run: dart run bin/render.dart --bg ../../app/assets/backgrounds/microcement.png --time 2025-12-21T08:30:00+08:00 --lat 39.9042 --lon 116.4074 --window east --width 480 --height 270 --out "${{ github.workspace }}/cli_smoke.png"
       - uses: actions/upload-artifact@v4
@@ -152,3 +160,24 @@ jobs:
             lightwall_render-*
             LightWall-windows-*.zip
             SHA256SUMS.txt
+            lightwall_day*.mp4
+            contact_sheet_*.png
+
+      - name: 追加延时视频（可选）
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.attach_mp4 == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 从最近一次成功的 Timelapse run 下载视频 artifact（若存在）
+          RID="$(gh api "repos/${{ github.repository }}/actions/workflows/timelapse.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].id' || true)"
+          if [ -z "$RID" ]; then echo "无成功的 Timelapse run，跳过"; exit 0; fi
+          AID="$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" --jq '.artifacts[] | select(.name=="timelapse-video") | .id' | head -1)"
+          if [ -z "$AID" ]; then echo "无 timelapse-video artifact，跳过"; exit 0; fi
+          mkdir -p mp4 && cd mp4
+          gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > a.zip
+          python3 -c "import zipfile; zipfile.ZipFile('a.zip').extractall('.')"
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          STAMP="$(date -u +%Y%m%d-%H%M%S)"
+          [ -f lightwall_day.mp4 ] && gh release upload "$TAG" "lightwall_day.mp4#${STAMP}" --clobber 2>/dev/null || \
+            gh release upload "$TAG" lightwall_day.mp4 --clobber
+          echo "已追加 lightwall_day.mp4 到 $TAG"
