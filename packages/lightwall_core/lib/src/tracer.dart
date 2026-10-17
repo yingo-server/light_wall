@@ -50,6 +50,7 @@ class TraceInput {
     this.penumbra = 0.0,
     this.sunAngularRadiusDeg,
     this.exposureEv = 1.0,
+    this.aod550 = 0.05,
   });
 
   final Scene3D scene;
@@ -81,6 +82,10 @@ class TraceInput {
 
   /// 视觉适应曝光（ACES 之前乘到线性辐照度上）。
   final double exposureEv;
+
+  /// 550 nm 气溶胶光学厚度 —— 决定环日散射（aureole）的能量占比，
+  /// 真源在 astro（能见度经 Koschmieder 反解）。缺省 0.05 ≈ 洁净大气。
+  final double aod550;
 }
 
 /// 着色输出。
@@ -145,7 +150,8 @@ TraceOutput traceScene(TraceInput input) {
   // 定义逆向换算，工作量级不变、距离依赖改为逐点正确。
   final visible = scene.windowVisibilityBatch(pts, sunDir,
       sunAngularRadiusDeg: input.sunAngularRadiusDeg ??
-          _sunAngularRadiusFromLegacyPenumbra(input));
+          _sunAngularRadiusFromLegacyPenumbra(input),
+      aod550: input.aod550);
 
   final cam = scene.camPos;
   final albedo = mat.albedo;

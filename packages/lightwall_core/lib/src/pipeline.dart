@@ -46,6 +46,11 @@ class LightInfo {
 
 /// 渲染参数。
 class RenderSpec {
+  /// 大气能见度（米）。物理真源：决定气溶胶光学厚度
+  /// （astro.aod550FromVisibility → 太阳光谱衰减 + 环日散射占比）。
+  /// 缺省 20000 m ≈ 晴天。旧实现把这个数写死在两处调用点的默认参数里。
+  final double visibilityM;
+
   RenderSpec({
     required this.time,
     required this.lat,
@@ -60,6 +65,7 @@ class RenderSpec {
     this.materialCoupling = 0.0,
     this.look = const LookConfig(),
     this.penumbraScale = 1.0,
+    this.visibilityM = 20000.0,
     this.shadowStrength = 0.25,
     this.cinnabar = kCinnabar,
     this.applyAging = true,
@@ -142,6 +148,7 @@ LightInfo computeLightInfo({
   required double lat,
   required double lon,
   required double windowAz,
+  double visibilityM = 20000.0,
 }) {
   final sun = sunPosition(lat, lon, time);
   final moon = moonPosition(lat, lon, time);
@@ -151,7 +158,8 @@ LightInfo computeLightInfo({
   final toSunAz = sun.azimuth;
 
   if (sunAlt > 0) {
-    final beam = solarIrradiance(sunAlt);
+    final vis = visibilityM;
+    final beam = solarIrradiance(sunAlt, vis);
     final diffuse = skyIrradiance(sunAlt);
     final color = sunColorFromAltitude(sunAlt);
     // exposureEv 不再在这里估：真实曝光由画面测光（sceneExposureEv）在
@@ -256,6 +264,7 @@ RenderResult render({
     lat: spec.lat,
     lon: spec.lon,
     windowAz: spec.windowAz,
+    visibilityM: spec.visibilityM,
   );
 
   // 5. 场景：把 spec 上的窗格参数覆盖到场景配置
@@ -292,6 +301,9 @@ RenderResult render({
             light.source == LightSource.moon ? light.moonAlt : light.sunAlt) *
         0.5 *
         spec.penumbraScale,
+    // 环日散射（aureole）能量占比由气溶胶决定：真源 = 能见度经
+    // Koschmieder 反解的 AOD550（astro.aod550FromVisibility）。
+    aod550: aod550FromVisibility(spec.visibilityM),
     // 曝光不在这里施加：它属于成像过程，须对**全部辐射**统一施加，
     // 否则直射与环境会落在不同的响应区间（见 synthesize 的说明）。
     exposureEv: 1.0,

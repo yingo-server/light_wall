@@ -510,6 +510,7 @@ class Scene3D {
     Float64List pts,
     List<double> sunDir, {
     double? sunAngularRadiusDeg,
+    double aod550 = 0.05,
   }) {
     final n = pts.length ~/ 3;
     final out = Float64List(n);
@@ -523,26 +524,60 @@ class Scene3D {
 
     // 光源角半径：外部给定优先；缺省用几何日面半角（单一真源在 astro）
     final altDeg = math.asin(ty.clamp(-1.0, 1.0)) / kDeg;
-    final angDeg = (sunAngularRadiusDeg ?? sunAngularDiameterDeg(altDeg) * 0.5)
-        .abs();
-    final theta = angDeg * kDeg;
+    final diskDeg =
+        (sunAngularRadiusDeg ?? sunAngularDiameterDeg(altDeg) * 0.5).abs();
+    // ── 两分量光源：日面 + **环日散射 aureole** ──
+    //
+    // 真实太阳直射不是纯圆盘：气溶胶米氏前向散射在日轮外铺开一条低辐亮度
+    // 的幂律尾（环日辐射 CSR，晴天空气溶胶下约占直射能量 10~20%，角半宽
+    // 约 2°）。它决定光斑边缘的柔化与四周的微光晕。此前实现只有几何日面
+    // （0.2665° 半角，3 m 墙上仅 ~2.8 cm ≈ 5 px），边缘因此刀切、"像贴上去"。
+    //
+    // 采样：64 样本切两组 —— 宽锥 8 个（分布平缓，少量即够），日面 56 个
+    // 按面积均匀分层并乘临边昏暗；权重按能量比归一到 1。
+    //
+    // 环日/直射能量比 wAureole 不写死：由气溶胶光学厚度 AOD550 给出。
+    // 经验依据（Hess & Koepke 对 CSR 的参数化，晴空气溶胶量级）：
+    //   AOD→0（瑞利大气）时环日辐射趋近瑞利前向峰值，占直射约 5%；
+    //   AOD=0.05（23 km 能见度）约 12%；AOD=0.4（霾）可达 30%。
+    // 用有理式 w = 0.05 + 0.19·√(AOD/(AOD+0.05)) 拟合上述三点，单调有界。
+    final aod = aod550.clamp(0.0, 1.5);
+    final wAureole =
+        0.05 + 0.19 * math.sqrt(aod / (aod + 0.05));
+    const double aureoleHalfDeg = 2.0;
+    final thetaDisk = diskDeg * kDeg;
+    final thetaHalo = aureoleHalfDeg * kDeg;
+    const int nHalo = 8;
+    const int nDisk = _kConeSamples - nHalo;
 
     // ── 方向空间球冠采样表（与像素无关，整帧算一次）──
-    final cosTheta = math.cos(theta);
-    final sinTheta = math.sin(theta);
     final cosG = Float64List(_kConeSamples);
     final sinG = Float64List(_kConeSamples);
     final wgt = Float64List(_kConeSamples);
     final phi = Float64List(_kConeSamples);
     var sumW = 0.0;
+    // 先求日面临边昏暗和，用于能量比归一
+    var ldSum = 0.0;
+    for (var s = 0; s < nDisk; s++) {
+      final cg = 1.0 - ((s + 0.5) / nDisk) * (1.0 - math.cos(thetaDisk));
+      ldSum += 1.0 - _kLimbDarkeningU * (1.0 - cg);
+    }
     for (var s = 0; s < _kConeSamples; s++) {
-      final u = (s + 0.5) / _kConeSamples; // 面积均匀分层（中点）
-      final cg = 1.0 - u * (1.0 - cosTheta);
+      final isHalo = s < nHalo;
+      final th = isHalo ? thetaHalo : thetaDisk;
+      final n = isHalo ? nHalo : nDisk;
+      final f = ((isHalo ? s : s - nHalo) + 0.5) / n;
+      final cg = 1.0 - f * (1.0 - math.cos(th));
       cosG[s] = cg;
       sinG[s] = math.sqrt(math.max(0.0, 1.0 - cg * cg));
       // 方位：黄金角序列（低差异），逐像素再加一个旋转量去相关
       phi[s] = _kTwoPi * ((s * _kGoldenRatioConj) % 1.0);
-      wgt[s] = 1.0 - _kLimbDarkeningU * (1.0 - cg);
+      if (isHalo) {
+        wgt[s] = wAureole / nHalo;
+      } else {
+        wgt[s] = (1.0 - wAureole) * (1.0 - _kLimbDarkeningU * (1.0 - cg)) /
+            math.max(ldSum, 1e-9);
+      }
       sumW += wgt[s];
     }
     // 与 toSun 正交的基
@@ -554,7 +589,8 @@ class Scene3D {
     final plane = pl.planeCoord;
     final uLo = math.min(pl.u0, pl.u1), uHi = math.max(pl.u0, pl.u1);
     final vLo = math.min(pl.v0, pl.v1), vHi = math.max(pl.v0, pl.v1);
-    final rhoMargin = sinTheta * (1.0 + sinTheta); // 覆盖线性化的二次残差
+    final rhoMargin =
+        math.sin(thetaHalo) * (1.0 + math.sin(thetaHalo)); // 用宽锥包络
 
     // 窗洞侧壁（reveal）：窗洞是穿过墙厚 d 的隧道。光线除在**内**墙面落在
     // 玻璃上，还必须穿出**外**墙面时仍落在窗洞开口内，否则被侧壁挡住。
