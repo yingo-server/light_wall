@@ -352,7 +352,21 @@ RenderResult render({
   // 地面反射）偏暖（sunColor）。旧实现整面墙乘一个与位置无关的常数色，
   // 等价于假设整个窗同色。
   final skyCol = ambColor;
-  final groundCol = sunColorFromAltitude(math.max(altForLight, 0.0));
+  // 室外地面所见之色 = **照到地面的光**的颜色（直射×投影 + 漫射）× 中性反照率。
+  // 关键：夜间/暮光无直射时，地面只受月光/天光照射 → 冷灰蓝；
+  // 旧实现写死 `sunColorFromAltitude(max(alt,0))`，夜里等于取了"地平线上的
+  // 落日色"（深橙红），于是整面墙被刷上一层红条。
+  final beamProj = light.beamIrradiance *
+      math.max(math.sin(math.max(altForLight, 0.0) * kDeg), 0.0);
+  final diffIrr = light.diffuseIrradiance;
+  final wBeam =
+      (beamProj + diffIrr) > 1e-12 ? beamProj / (beamProj + diffIrr) : 0.0;
+  final sunCol = sunColorFromAltitude(math.max(altForLight, 0.0));
+  final groundCol = <double>[
+    skyCol[0] * (1 - wBeam) + sunCol[0] * wBeam,
+    skyCol[1] * (1 - wBeam) + sunCol[1] * wBeam,
+    skyCol[2] * (1 - wBeam) + sunCol[2] * wBeam,
+  ];
   final gshare = groundShareField(trace.pts, trace.valid, scene);
   for (var i = 0; i < n; i++) {
     final gs = gshare[i];

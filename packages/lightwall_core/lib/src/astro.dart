@@ -469,21 +469,23 @@ double nightSkyIrradiance(double moonAlt, double phase,
   return natural * (1.0 + math.max(0.0, cityGlow)) + moonAmb;
 }
 
-/// 晴空天光色（线性 RGB，最大分量归一化为 1）。
+/// 散射天空（或暮光）的颜色：Rayleigh 散射光的光谱经 CIE 积分，最大分量
+/// 归一化为 1。
 ///
-/// 物理：天空的颜色来自**单次 Rayleigh 散射**的天空光谱
-///   L_sky(λ) ∝ L_sun(λ)·T_atm(λ)·τ_R(λ)
-/// （τ_R ∝ λ⁻⁴ 是"天空为什么是蓝的"的全部来源），再做 CIE 积分。太阳越低，
-/// 直射光在大气中走的路越长（空气中的光学厚度越大），进入散射的蓝光被提前
-/// 滤掉，天光因此由天顶的蓝逐步偏灰、偏暖 —— 这条演变由光谱自然给出，
-/// 不再是"天顶/地平线两档 RGB 线段"的手调插值。
+/// **光程必须封顶**：若用"太阳到地面"的全光程，低日时蓝光被吃尽，天空色会
+/// 变成饱和橙红 —— 但真实的天空并不是这样。天光来自**高层大气**的散射，
+/// 那束光走完剩余大气之前就已经进到观察者眼里；被严重红化的是**直射光束**，
+/// 不是天空本身。故此处对光学厚度取上限（[maxAirMass]）：
+///   · 正午：天蓝；
+///   · 黄昏：天顶仍是蓝灰（真实民用暮光即深蓝），暖色只出现在**地平线亮带**，
+///     而室内环境光由大面积蓝天主导，故整体偏蓝；
+///   · 夜间：蓝灰。
+/// 暖色由**直射光**（[sunColorFromAltitude]）承担，不从天光里伪造。
 List<double> skyColor(double sunAlt) => _scatterColor(sunAlt);
 
-/// 散射天空（或暮光）的颜色：Rayleigh 散射光的光谱经 CIE 积分，最大分量
-/// 归一化为 1。太阳高度角可正可负（暮光用负值 = 更长的光程）。
-List<double> _scatterColor(double sunAltDeg) {
+List<double> _scatterColor(double sunAltDeg, {double maxAirMass = 6.0}) {
   final a = sunAltDeg < -8.0 ? -8.0 : (sunAltDeg > 90.0 ? 90.0 : sunAltDeg);
-  final am = airMassKastenYoung(a);
+  final am = math.min(airMassKastenYoung(a), maxAirMass);
   var x = 0.0, y = 0.0, z = 0.0;
   for (var l = 380.0; l <= 780.0; l += 2.0) {
     final e = planckRel(l) * atmosphericTransmittance(l, am) * rayleighTau(l);

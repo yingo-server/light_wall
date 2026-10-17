@@ -318,17 +318,13 @@ class Scene3D {
     return (origins, dirs);
   }
 
-  /// 射线与观察墙（z = 0）求交，**并做房间范围判定**。返回 (命中掩码, 交点)。
+  /// 射线与观察墙（z = 0）求交。
   ///
   /// 房间是 z=0 处的观察墙与侧墙 x=±roomW/2、地板 y=0、天花 y=roomH 围成的
-  /// 有限矩形。旧实现只求 z=0 平面、不判 |x| ≤ roomW/2 与 0 ≤ y ≤ roomH，
-  /// 于是 cameraDist/H/FOV 组合下画面下缘的射线（实测 5.4%~5.6% 像素）在
-  /// y < 0（地板以下）也与 z=0 求交，被当成"观察墙上的点"着色，而 hitMask
-  /// 恒为 1（tracer 里 `valid <= 0` 分支是死代码）。
-  ///
-  /// 这里把范围判定补上：只有落在房间边界内的交点才算命中，越界像素置
-  /// 掩码 0，由调用方按"未命中"处理（本实现没有地板/侧墙材质模型，
-  /// 见 bin 记录中的 待决策项）。
+  /// 有限矩形。本项目尚未建地板/天花的材质模型，故对越界射线**按墙点钳制**
+  /// 后着色（而不是丢弃）：若丢弃，越界像素会走 tracer 的兜底分支，在夜间
+  /// 大曝光下被放大成一条**横贯画面的亮带**（实测亮度 200 对墙面的 50）。
+  /// 钳制相当于"墙延伸到画面下缘"，视觉上远小于亮带；地板建模列于待决。
   (Float64List, Float64List) rayWallIntersectBatch(
       Float64List origins, Float64List dirs) {
     final n = dirs.length ~/ 3;
@@ -344,11 +340,9 @@ class Scene3D {
       if (t <= 0) continue;
       final x = origins[o3] + t * dirs[o3];
       final y = origins[o3 + 1] + t * dirs[o3 + 1];
-      if (x < -halfW || x > halfW) continue; // 侧墙之外
-      if (y < 0.0 || y > hMax) continue; // 地板之下 / 天花之上
       hitMask[i] = 1.0;
-      pts[o3] = x;
-      pts[o3 + 1] = y;
+      pts[o3] = x.clamp(-halfW, halfW);
+      pts[o3 + 1] = y.clamp(0.0, hMax);
       pts[o3 + 2] = 0.0;
     }
     return (hitMask, pts);

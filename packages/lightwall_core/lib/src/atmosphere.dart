@@ -205,36 +205,63 @@ Float64List apertureIlluminance(
 }
 
 /// 逐像素的"地面占比"：进入该墙点的窗光里，来自**地平线以下**（室外地面/
-/// 建筑立面）的能量占多少。用于让环境光有**色**：上半窗进来的天光偏蓝、
-/// 下半窗进来的地面反射光偏暖（真实存在、且与亮度解耦的上暖下冷梯度）。
+/// 建筑立面）的能量占多少。
 ///
-/// 为何用**解析几何**而非采样统计：墙点之"地平线"是过它的一条水平面；
-/// 窗面在垂直方向被其分为上下两段，下段所占比例即
-///     gs = clamp((y_P − v₀)/(v₁ − v₀), 0, 1)。
-/// 旧实现以 4×4 个窗面样本数"地平线以下的样本占比"，只有 **16 个离散档**，
-/// 于是整幅画面出现横向的、通宽的**色带**（档与档之间硬边）。
-/// 解析式随 y_P 连续，永无阶梯，且成本为零。
+/// 两条要点：
+///   · **连续**：不再把"地平线上下"当二元判定，而以与 `_skyRadiance` 同一
+///     带宽（±0.06 方向余弦）做平滑过渡，故颜色随高度连续，无台阶/色带；
+///   · **足量采样**：8×8，避免少样本造成离散色阶。
 Float64List groundShareField(
   Float64List pts,
   Float64List valid,
   Scene3D scene, {
-  int samplesU = 4,
-  int samplesV = 4,
+  int samplesU = 8,
+  int samplesV = 8,
 }) {
   final pl = scene.placement();
   final n = valid.length;
   final out = Float64List(n);
-  final v0 = math.min(pl.v0, pl.v1);
-  final v1 = math.max(pl.v0, pl.v1);
-  final span = v1 - v0;
-  if (span <= 1e-6) return out;
+  final u0 = pl.u0, u1 = pl.u1, v0 = pl.v0, v1 = pl.v1;
+  final plane = pl.planeCoord;
+  final eastWest = pl.wall == Wall.east || pl.wall == Wall.west;
+  const blend = 0.06; // 地平线过渡带（方向余弦，与 _skyRadiance 一致）
   for (var i = 0; i < n; i++) {
-    if (valid[i] <= 0) {
-      out[i] = 0.0;
-      continue;
+    if (valid[i] <= 0) continue;
+    final o = i * 3;
+    final px = pts[o].clamp(-scene.cfg.roomW * 0.5, scene.cfg.roomW * 0.5);
+    final py = pts[o + 1].clamp(0.0, scene.cfg.roomH);
+    final pz = pts[o + 2].clamp(0.0, scene.cfg.roomD);
+    var total = 0.0;
+    var ground = 0.0;
+    for (var si = 0; si < samplesU; si++) {
+      final u = u0 + (u1 - u0) * (si + 0.5) / samplesU;
+      for (var sj = 0; sj < samplesV; sj++) {
+        final v = v0 + (v1 - v0) * (sj + 0.5) / samplesV;
+        double dx, dy, dz, cosWin;
+        if (eastWest) {
+          dx = plane - px;
+          dy = v - py;
+          dz = u - pz;
+          cosWin = dx.abs();
+        } else {
+          dx = u - px;
+          dy = v - py;
+          dz = plane - pz;
+          cosWin = dz.abs();
+        }
+        final r2 = dx * dx + dy * dy + dz * dz;
+        final r = math.sqrt(math.max(r2, 1e-6));
+        final inv = 1.0 / r;
+        final cosWall = dz.abs() * inv;
+        final contrib = (cosWin * inv) * cosWall * inv2(r2);
+        final dirY = dy * inv;
+        // t: 1 = 天空（上），0 = 地面（下），在地平线附近平滑过渡
+        final t = ((dirY + blend) / (2 * blend)).clamp(0.0, 1.0);
+        total += contrib;
+        ground += contrib * (1.0 - t);
+      }
     }
-    final py = pts[i * 3 + 1];
-    out[i] = ((py - v0) / span).clamp(0.0, 1.0);
+    out[i] = total > 1e-12 ? (ground / total).clamp(0.0, 1.0) : 0.0;
   }
   return out;
 }
