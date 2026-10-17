@@ -59,8 +59,8 @@ on:
         default: '20000'
       # ── 运行与发布 ──
       jobs:
-        description: '并行渲染进程数'
-        default: '4'
+        description: '并行渲染线程数（爬坡模型：首帧立即起 1 线程，此后每 30s +1，任一完成立即补位）'
+        default: '8'
       verbose:
         description: '逐帧详细日志'
         default: 'false'
@@ -142,7 +142,7 @@ jobs:
             --visibility ${{ github.event.inputs.visibility || '20000' }} \
             --absolute-lux "${{ github.event.inputs.absolute_lux }}" \
             --text "${{ github.event.inputs.text || '千万不要忘记,阶级斗争！' }}" \
-            --jobs ${{ github.event.inputs.jobs || '4' }} \
+            --jobs ${{ github.event.inputs.jobs || '8' }} \
             ${{ github.event.inputs.wet_ground == 'true' && '--wet-ground' || '' }} \
             ${{ github.event.inputs.verbose == 'true' && '--verbose' || '' }}
 

@@ -101,8 +101,7 @@ def main():
     if abs(args.visibility - 20000.0) > 1e-9:
         extra += ["--visibility", str(args.visibility)]
 
-    def render_one(item):
-        idx, t = item
+    def render_one(idx, t):
         out = os.path.join(frames_dir, f"f{idx:04d}.png")
         cmd = [
             args.engine,
@@ -148,16 +147,64 @@ def main():
         return entry, ok
 
     done = 0
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        for entry, ok in pool.map(render_one, list(enumerate(points))):
-            timeline.append(entry)
-            done += 1
-            if not ok:
-                fails += 1
-            if done % 60 == 0:
-                el = time.time() - t0
-                print(f"进度 {done}/{frames} · 已用 {el:.0f}s · "
-                      f"均 {el / done:.1f}s/帧", flush=True)
+    # ── 并行模型：8 线程爬坡 ──────────────────────────────────────
+    # 首帧立即起 1 线程；此后每 30 s 补 1 线程直至 8（--jobs）；任何
+    # 线程完成立即从队列取下一帧补位（完成的瞬间吞吐不掉）。
+    # 用 as_completed 而非 map：map 会等整批提交按序产出，完成后补位
+    # 由线程池天然保证；爬坡用 submitted 计数 + 时间窗控制。
+    import threading
+    import queue as _queue
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    task_q = _queue.Queue()
+    for item in list(enumerate(points)):
+        task_q.put(item)
+
+    ramp_interval = 30.0
+    t_start = time.time()
+    lock = threading.Lock()
+    stats_counter = {"done": 0, "fail": 0}
+
+    def worker():
+        while True:
+            try:
+                idx, t = task_q.get_nowait()
+            except _queue.Empty:
+                return
+            entry, ok = render_one(idx, t)
+            with lock:
+                stats_counter["done"] += 1
+                if not ok:
+                    stats_counter["fail"] += 1
+                d = stats_counter["done"]
+                if d % 60 == 0:
+                    el = time.time() - t_start
+                    print(f"进度 {d}/{frames} · 已用 {el:.0f}s · "
+                          f"均 {el / d:.1f}s/帧", flush=True)
+            task_q.task_done()
+
+    def spawn_limited(n):
+        """补齐到 n 个存活线程（不超过 --jobs）。"""
+        while len(workers) < min(n, jobs):
+            th = threading.Thread(target=worker, daemon=True)
+            th.start()
+            workers.append(th)
+
+    workers = []
+    spawn_limited(1)  # 首帧立即启动
+    next_ramp = t_start + ramp_interval
+    # 主线程负责爬坡与等待；全部任务出队且线程收尾即退出
+    while True:
+        time.sleep(0.5)
+        now = time.time()
+        if now >= next_ramp and not task_q.empty():
+            spawn_limited(len(workers) + 1)
+            next_ramp = now + ramp_interval
+        if task_q.empty() and all(not th.is_alive() for th in workers):
+            break
+    for th in workers:
+        th.join(timeout=5)
+    fails = stats_counter["fail"]
     timeline.sort(key=lambda e: e["index"])
 
     with open(os.path.join(args.out_dir, "timeline.json"), "w", encoding="utf-8") as f:
