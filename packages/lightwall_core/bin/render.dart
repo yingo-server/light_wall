@@ -138,6 +138,14 @@ void main(List<String> argv) {
   );
 
   final visibilityM = _req('visibility', 20000.0, '大气能见度，米');
+  // 丙类（可选，默认关）：天气 / 室内灯 / 城市辉光 / 绝对标定
+  final cloudCover = _req('cloud', 0.0, '云量 0~1');
+  final wetGround = args['wet-ground'] == 'true';
+  final indoorLight = _req('indoor-light', 0.0, '室内灯相对强度');
+  final cityGlow = _req('city-glow', 0.0, '城市光污染相对量（市区≈2）');
+  final absoluteLuxStr = args['absolute-lux'];
+  final absoluteLux =
+      absoluteLuxStr != null ? double.parse(absoluteLuxStr) : null;
   final look = LookConfig(
     exposure: double.tryParse(args['exposure'] ?? '') ?? 1.0,
     saturation: double.tryParse(args['saturation'] ?? '') ?? 1.0,
@@ -156,6 +164,10 @@ void main(List<String> argv) {
     seed: int.tryParse(args['seed'] ?? '') ?? 20251014,
     aged: aged,
     visibilityM: visibilityM,
+    weather: WeatherParams(cloudCover: cloudCover, wetGround: wetGround),
+    indoor: IndoorParams(lightLevel: indoorLight),
+    cityGlow: cityGlow,
+    absoluteLux: absoluteLux,
     materialCoupling: double.tryParse(args['coupling'] ?? '') ?? 0.0,
     look: look,
     applyAging: maskPath != null,
@@ -244,6 +256,11 @@ LightWall 命令行渲染器（纯 Dart · 零 Flutter / GPU 依赖）
   --camera-h <m> --camera-dist <m> --fov <deg> --room-w <m> --room-d <m>
   --width <px> --height <px>
   --visibility <m>      大气能见度（米，默认 20000；影响太阳光谱衰减与环日散射占比）
+  --cloud <0~1>         云量（丙类可选，默认 0=晴天；>0 时直射按云衰减、天空向阴天插值）
+  --wet-ground          雨湿地面（配合 --cloud；反照率 0.25→0.08）
+  --indoor-light <x>    室内灯相对强度（丙类可选，默认 0；夜/暮光分支叠加）
+  --city-glow <x>       城市光污染相对量（丙类可选，默认 0；远郊0.1/近郊0.5/市区2）
+  --absolute-lux <x>    绝对量纲标定（丙类可选；设定后停用自动曝光，中位对准该 lux）
   --style default|clean|aged
   --exposure --saturation --material --coupling
   --text-alpha <path>   文字 alpha 蒙版 PNG

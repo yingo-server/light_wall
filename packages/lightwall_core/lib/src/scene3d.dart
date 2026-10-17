@@ -318,18 +318,24 @@ class Scene3D {
     return (origins, dirs);
   }
 
-  /// 射线与观察墙（z = 0）求交。
+  /// 射线与观察墙（z = 0）求交；y<0 的越界射线改打**地板**（乙类③）。
   ///
   /// 房间是 z=0 处的观察墙与侧墙 x=±roomW/2、地板 y=0、天花 y=roomH 围成的
-  /// 有限矩形。本项目尚未建地板/天花的材质模型，故对越界射线**按墙点钳制**
-  /// 后着色（而不是丢弃）：若丢弃，越界像素会走 tracer 的兜底分支，在夜间
-  /// 大曝光下被放大成一条**横贯画面的亮带**（实测亮度 200 对墙面的 50）。
-  /// 钳制相当于"墙延伸到画面下缘"，视觉上远小于亮带；地板建模列于待决。
-  (Float64List, Float64List) rayWallIntersectBatch(
+  /// 有限矩形。早期实现未建模地板，越界射线按墙点钳制——视觉上"墙延伸到
+  /// 画面下缘"，低视角时整幅下部都是拉伸的墙面。现按真实几何处理：
+  ///
+  /// · 交点 y ∈ [0, roomH] 且 |x| ≤ roomW/2 → 观察墙（surfaceType 0）
+  /// · 交点 y < 0 → 射线先穿地板：在 y=0 平面求交（surfaceType 1），
+  ///   着色用地面反照率（水泥 0.25 / 湿面 0.08）× 环境光；直射光斑在
+  ///   地板上按几何正确投影（低角度冬季光斑本就该落在地板上）。
+  /// · 交点 y > roomH → 天花同理（surfaceType 2，反照率 0.80）。
+  /// 返回 (hitMask, pts, surfaceType)。
+  (Float64List, Float64List, Float64List) rayWallIntersectBatch(
       Float64List origins, Float64List dirs) {
     final n = dirs.length ~/ 3;
     final hitMask = Float64List(n);
     final pts = Float64List(n * 3);
+    final surface = Float64List(n); // 0=墙 1=地板 2=天花
     final halfW = cfg.roomW * 0.5;
     final hMax = cfg.roomH;
     for (var i = 0; i < n; i++) {
@@ -342,10 +348,19 @@ class Scene3D {
       final y = origins[o3 + 1] + t * dirs[o3 + 1];
       hitMask[i] = 1.0;
       pts[o3] = x.clamp(-halfW, halfW);
-      pts[o3 + 1] = y.clamp(0.0, hMax);
       pts[o3 + 2] = 0.0;
+      if (y < 0.0) {
+        // 地板：把交点拉回 y=0，x/z 按射线延长（相机略高俯视时地板可见）
+        surface[i] = 1.0;
+        pts[o3 + 1] = 0.0;
+      } else if (y > hMax) {
+        surface[i] = 2.0;
+        pts[o3 + 1] = hMax;
+      } else {
+        pts[o3 + 1] = y;
+      }
     }
-    return (hitMask, pts);
+    return (hitMask, pts, surface);
   }
 
   /// 窗面到观察墙的**代表距离**（米）。
@@ -511,6 +526,7 @@ class Scene3D {
     List<double> sunDir, {
     double? sunAngularRadiusDeg,
     double aod550 = 0.05,
+    bool isMoon = false,
   }) {
     final n = pts.length ~/ 3;
     final out = Float64List(n);
@@ -543,8 +559,11 @@ class Scene3D {
     // 有理式 w = 0.05 + 0.19·√(AOD/(AOD+0.05)) 代回：
     //   AOD=0.05 → 0.184，AOD=0.4 → 0.229（单调有界，锚点与式自洽）。
     final aod = aod550.clamp(0.0, 1.5);
-    final wAureole =
-        0.05 + 0.19 * math.sqrt(aod / (aod + 0.05));
+    final wAureole = isMoon
+        ? 0.0 // 月面朗伯散射，无环日晕
+        : 0.05 + 0.19 * math.sqrt(aod / (aod + 0.05));
+    // 临边昏暗系数 u：太阳 0.6（Allen），月球 0（朗伯散射面）
+    final limbU = isMoon ? 0.0 : _kLimbDarkeningU;
     const double aureoleHalfDeg = 2.0;
     final thetaDisk = diskDeg * kDeg;
     final thetaHalo = aureoleHalfDeg * kDeg;
@@ -560,7 +579,7 @@ class Scene3D {
     var ldSum = 0.0;
     for (var s = 0; s < nDisk; s++) {
       final cg = 1.0 - ((s + 0.5) / nDisk) * (1.0 - math.cos(thetaDisk));
-      ldSum += 1.0 - _kLimbDarkeningU * (1.0 - cg);
+      ldSum += 1.0 - limbU * (1.0 - cg);
     }
     for (var s = 0; s < _kConeSamples; s++) {
       final isHalo = s < nHalo;
@@ -575,7 +594,7 @@ class Scene3D {
       if (isHalo) {
         wgt[s] = wAureole / nHalo;
       } else {
-        wgt[s] = (1.0 - wAureole) * (1.0 - _kLimbDarkeningU * (1.0 - cg)) /
+        wgt[s] = (1.0 - wAureole) * (1.0 - limbU * (1.0 - cg)) /
             math.max(ldSum, 1e-9);
       }
     }
@@ -706,6 +725,14 @@ class Scene3D {
           final vo = py + to * ly;
           if (uo >= uLo && uo <= uHi && vo >= vLo && vo <= vHi) {
             acc += wgt[s];
+          } else {
+            // ── reveal 侧壁漫反射补光（乙类⑥，默认启用）──
+            // 射线打在窗洞侧壁上：侧壁本身是漫反射面，会把入射的天光/直射
+            // 再散射进房间。被侧壁"挡住"的方向不是全黑——按隧道内路径长度
+            // 给一个小的透光系数（越深越暗，指数衰减）。早期实现漏了这层，
+            // 半影带因此比真实偏暗一档。
+            final depth = (planeOuter - plane).abs();
+            acc += wgt[s] * math.exp(-3.0 * depth / 0.30); // 归一到 0.30 m 墙厚
           }
         }
       }

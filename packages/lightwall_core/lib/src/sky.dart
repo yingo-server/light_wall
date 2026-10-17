@@ -35,6 +35,12 @@ import 'dart:math' as math;
 const ({double a, double b, double c, double d, double e}) kClearSky =
     (a: -1.0, b: -0.32, c: 10.0, d: -3.0, e: 0.45);
 
+/// **CIE 阴天**系数（ISO 15469 Overcast，b≡0 的标准阴天分布）：
+/// 天顶比地平线亮约 3×（与晴空相反的梯度），无太阳方位依赖。
+/// 丙类 --cloud > 0 时与晴空按云量插值。
+const ({double a, double b, double c, double d, double e}) kOvercastSky =
+    (a: 4.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0);
+
 /// 相对天顶亮度的**天空分布因子**（无量纲，天顶方向 = 1）。
 ///
 /// [zenithRad]：该方向的天顶角（0 = 天顶，π/2 = 地平线）
@@ -42,14 +48,31 @@ const ({double a, double b, double c, double d, double e}) kClearSky =
 /// [sunZenithDeg]：太阳天顶角（**仅为兼容签名保留**：当前晴空只用单一固定系数表，不参与计算）
 /// [sunAltDeg]：太阳高度角（用于太阳落入地平线时的退化处理）
 double skyLuminanceFactor(
-    double zenithRad, double gammaRad, double sunZenithDeg, double sunAltDeg) {
+    double zenithRad, double gammaRad, double sunZenithDeg, double sunAltDeg,
+    {double cloudCover = 0.0}) {
   // 不再对 sunAltDeg ≤ 0 做硬切换：旧实现在太阳跨地平线时切成
   // `0.75 + 0.25·sin(z)`，丢掉全部太阳方位依赖，与晴天分支在 0° 处不连续
   // （天顶亮度 1.0000 → 0.7500 的 25% 台阶 + 方位结构整体消失），
   // 而黄昏/晨曦正是本产品的主战场。散射光的**方向结构**由同一套 CIE 晴空
   // 系数给出，太阳落到地平线下时依然成立（只是整体亮度下降，那由
   // astro.skyIrradiance / 曝光负责，不是分布因子的职责）。
-  const co = kClearSky;
+  //
+  // 云量插值（丙类 --cloud）：晴空 ↔ 阴天两套标准分布按云量线性混合。
+  // 阴天无太阳方位结构（c=d=e=0），混合后太阳侧亮斑随云量平滑消隐。
+  final c = cloudCover.clamp(0.0, 1.0);
+  ({double a, double b, double c, double d, double e}) co;
+  if (c <= 0.0) {
+    co = kClearSky;
+  } else {
+    const k = kOvercastSky;
+    co = (
+      a: kClearSky.a * (1 - c) + k.a * c,
+      b: kClearSky.b * (1 - c) + k.b * c,
+      c: kClearSky.c * (1 - c) + k.c * c,
+      d: kClearSky.d * (1 - c) + k.d * c,
+      e: kClearSky.e * (1 - c) + k.e * c,
+    );
+  }
   // 分母：θ=0（天顶）、γ=π/2 时的归一化值
   final denom = (1.0 + co.a * math.exp(co.b)) *
       (1.0 + co.c * math.exp(co.d * math.pi / 2) + co.e * 0.0);

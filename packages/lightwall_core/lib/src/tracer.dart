@@ -51,6 +51,8 @@ class TraceInput {
     this.sunAngularRadiusDeg,
     this.exposureEv = 1.0,
     this.aod550 = 0.05,
+    this.isMoon = false,
+    this.wetGround = false,
   });
 
   final Scene3D scene;
@@ -86,6 +88,12 @@ class TraceInput {
   /// 550 nm 气溶胶光学厚度 —— 决定环日散射（aureole）的能量占比，
   /// 真源在 astro（能见度经 Koschmieder 反解）。缺省 0.05 ≈ 洁净大气。
   final double aod550;
+
+  /// 月光光源标记：月面为朗伯散射面，无临边昏暗、无环日晕。
+  final bool isMoon;
+
+  /// 雨湿地面（丙类透传）：地板反照率 0.08。
+  final bool wetGround;
 }
 
 /// 着色输出。
@@ -127,7 +135,7 @@ TraceOutput traceScene(TraceInput input) {
   final n = w * h;
 
   final (origins, dirs) = scene.screenToRayBatch(w, h);
-  final (valid, pts) = scene.rayWallIntersectBatch(origins, dirs);
+  final (valid, pts, surface) = scene.rayWallIntersectBatch(origins, dirs);
 
   final sunDir = scene.sunToRoomDir(input.sunAzGeo, input.sunAlt);
   final toSun = <double>[-sunDir[0], -sunDir[1], -sunDir[2]];
@@ -140,7 +148,10 @@ TraceOutput traceScene(TraceInput input) {
   // （cos 0.05 → T 0.12）。早期实现用 `max(0.05, cos)` 这种人为下限兜住
   // 掠射，那只是掩盖问题：真正让掠射趋近于零的是物理（投影面积 ×
   // 双面玻璃透射），不需要任何下限。
-  final glassT = glassTransmittance(cosInc);
+  // 现代窗默认中空双玻（甲类，默认启用）。旧单玻值系统性高 8%。
+  final glassT = doubleGlassTransmittance(cosInc);
+  // 玻璃铁杂质的光谱选择吸收（乙类⑦）：透射光微偏绿
+  final gTintR = glassT * 0.955, gTintG = glassT, gTintB = glassT * 0.965;
 
   // 直射可见性（穿窗 + 窗格）
   //
@@ -151,7 +162,8 @@ TraceOutput traceScene(TraceInput input) {
   final visible = scene.windowVisibilityBatch(pts, sunDir,
       sunAngularRadiusDeg: input.sunAngularRadiusDeg ??
           _sunAngularRadiusFromLegacyPenumbra(input),
-      aod550: input.aod550);
+      aod550: input.aod550,
+      isMoon: input.isMoon);
 
   final cam = scene.camPos;
   final albedo = mat.albedo;
@@ -160,9 +172,9 @@ TraceOutput traceScene(TraceInput input) {
   final isWater = mat.isWater;
 
   final out = Float32List(n * 3);
-  final sunR = input.sunColor[0],
-      sunG = input.sunColor[1],
-      sunB = input.sunColor[2];
+  final sunR = input.sunColor[0] * gTintR,
+      sunG = input.sunColor[1] * gTintG,
+      sunB = input.sunColor[2] * gTintB;
   final ambR = input.ambientColor[0],
       ambG = input.ambientColor[1],
       ambB = input.ambientColor[2];
@@ -188,7 +200,19 @@ TraceOutput traceScene(TraceInput input) {
     }
 
     final px = pts[o], py = pts[o + 1]; // pz 恒为 0
-    final nx = normal[i3], ny = normal[i3 + 1], nz = normal[i3 + 2];
+    final isFloor = surface[i] > 0.5 && surface[i] < 1.5;
+    final isCeil = surface[i] > 1.5;
+    // 地板/天花：反照率取水泥地 0.25（湿 0.08）/ 顶棚 0.80，法线为水平面
+    // （地板朝上 +Y，天花朝下 −Y）；观察墙仍用材质法线（含凹凸调制）。
+    double aR2 = aR, aG2 = aG, aB2 = aB;
+    double nx = normal[i3], ny = normal[i3 + 1], nz = normal[i3 + 2];
+    if (isFloor) {
+      aR2 = aG2 = aB2 = input.wetGround ? kGroundAlbedoWet : kGroundAlbedoDry;
+      nx = 0.0; ny = 1.0; nz = 0.0;
+    } else if (isCeil) {
+      aR2 = aG2 = aB2 = 0.80;
+      nx = 0.0; ny = -1.0; nz = 0.0;
+    }
 
     // N·L（观察墙法线 +Z，但用材质法线做凹凸调制）
     var ndl = nx * toSun[0] + ny * toSun[1] + nz * toSun[2];
@@ -215,9 +239,9 @@ TraceOutput traceScene(TraceInput input) {
       // 破坏了能量守恒；掠射（F→1）时最明显。
       final fres = _fresnelSchlick(ndv, _kF0);
       final kd = ndlV * beamScaleAll * (1.0 - fres);
-      r = aR * sunR * kd;
-      g = aG * sunG * kd;
-      b = aB * sunB * kd;
+      r = aR2 * sunR * kd;
+      g = aG2 * sunG * kd;
+      b = aB2 * sunB * kd;
 
       // 镜面（Cook-Torrance GGX + Smith + Schlick）
       var hx = vx + toSun[0];
@@ -328,5 +352,12 @@ double _cookTorrance(double ndl, double ndv, double ndh, double roughness) {
   final g = g1l * g1v;
   final f = _fresnelSchlick(ndv, _kF0);
   final brdf = (d * g * f) / (4.0 * ndl * ndv + 1e-6);
-  return brdf.clamp(0.0, 20.0);
+  // ── 乳胶漆 sheen（甲类⑨，默认启用）──
+  // 真实内墙乳胶漆（亚光乙烯基）在掠射角有可感的 sheen：F0≈0.04 的介电
+  // 基底 + 绒面微结构使 F(θ) 在 θ>75° 时显著高于 Schlick 预测。经验修正
+  // （Ashikhmin-Shirley sheen 项的简化）：sheen = kS·(1−ndv)⁵，kS≈0.25
+  // 使 85° 掠射处反射率从 0.32 升到 ~0.5，符合文献测量（Marschner 1999
+  // 的 velvet/lint 项）。法向附近 (1-ndv)⁵→0，不影响常规视角。
+  final sheen = 0.25 * math.pow(1.0 - ndv, 5).toDouble() * (1.0 - _kF0);
+  return (brdf + sheen).clamp(0.0, 20.0);
 }

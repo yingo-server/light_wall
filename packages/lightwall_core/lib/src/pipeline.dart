@@ -45,6 +45,30 @@ class LightInfo {
 }
 
 /// 渲染参数。
+/// 天气参数（丙类，可选）。默认全晴天，与既有行为一致。
+class WeatherParams {
+  const WeatherParams({this.cloudCover = 0.0, this.wetGround = false});
+
+  /// 云量 0~1。0 = 既有晴天路径；>0 时：直射乘云透过率（(1−c)^1.6 近似
+  /// 散射损耗）、天空分布向 CIE 阴天分布插值、地面反照率按 [wetGround]。
+  final double cloudCover;
+
+  /// 阴雨地面（反照率 0.25 → 0.08）。
+  final bool wetGround;
+
+  bool get enabled => cloudCover > 0;
+}
+
+/// 室内人工光参数（丙类，可选）。默认关。
+class IndoorParams {
+  const IndoorParams({this.lightLevel = 0.0});
+
+  /// 室内灯强度（相对量）。>0 时在暮光/夜间分支叠加一个中性暖色环境底。
+  final double lightLevel;
+
+  bool get enabled => lightLevel > 0;
+}
+
 class RenderSpec {
   /// 大气能见度（米）。物理真源：决定气溶胶光学厚度
   /// （astro.aod550FromVisibility → 太阳光谱衰减 + 环日散射占比）。
@@ -69,7 +93,26 @@ class RenderSpec {
     this.shadowStrength = 0.25,
     this.cinnabar = kCinnabar,
     this.applyAging = true,
+    this.weather = const WeatherParams(),
+    this.indoor = const IndoorParams(),
+    this.absoluteLux,
+    this.cityGlow = 0.0,
   });
+
+  /// 天气（丙类可选）。默认 = 晴天（cloudCover 0），管线行为与旧版完全
+  /// 一致；仅在 CLI 显式传 --cloud 时生效。
+  final WeatherParams weather;
+
+  /// 室内人工光（丙类可选）。默认关。仅在 CLI 显式传 --indoor-light 时生效。
+  final IndoorParams indoor;
+
+  /// 绝对量纲标定（丙类可选）。非空时：输出以绝对 lux 基准，**停用自动
+  /// 曝光**（sceneExposureEv），以 absoluteLux 为画面中位亮度的目标值。
+  final double? absoluteLux;
+
+  /// 城市光污染（Walker 定律相对量，丙类可选）。默认 0 = 自然夜空。
+  /// 典型值：远郊 0.1、近郊 0.5、市区 2.0（夜空辉光相对自然底的倍增）。
+  final double cityGlow;
 
   final DateTime time;
   final double lat;
@@ -149,6 +192,9 @@ LightInfo computeLightInfo({
   required double lon,
   required double windowAz,
   double visibilityM = 20000.0,
+  double cloudCover = 0.0,
+  double cityGlow = 0.0,
+  double indoorLight = 0.0,
 }) {
   final sun = sunPosition(lat, lon, time);
   final moon = moonPosition(lat, lon, time);
@@ -159,8 +205,13 @@ LightInfo computeLightInfo({
 
   if (sunAlt > 0) {
     final vis = visibilityM;
-    final beam = solarIrradiance(sunAlt, vis);
-    final diffuse = skyIrradiance(sunAlt);
+    // 云量：直射透过率随云量衰减（Beer 式近似，厚云 (1-c)^1.6 → c=1 全遮挡），
+    // 漫射相应增强（云成为大面积散射源，上限约晴空的 2.2 倍）。
+    final c = cloudCover.clamp(0.0, 1.0);
+    final cloudBeamT = math.pow(1.0 - c, 1.6).toDouble();
+    final beam = solarIrradiance(sunAlt, vis) * cloudBeamT;
+    final diffuse =
+        skyIrradiance(sunAlt) * (1.0 + 1.2 * c);
     final color = sunColorFromAltitude(sunAlt);
     // exposureEv 不再在这里估：真实曝光由画面测光（sceneExposureEv）在
     // render() 内算出并写回（旧实现把入射照度的幂律当曝光，且它与实际
@@ -184,7 +235,9 @@ LightInfo computeLightInfo({
     // 暮光漫射：与白天用**同一条**物理曲线（[twilightDiffuse]），在 h=0 处
     // 连续、随下沉角近似指数衰减，且始终亮于夜空。旧实现 `0.024+0.086·(1−s)`
     // 是"为防日落比午夜暗"凑出来的数，与白天分支在 0° 处有一帧级跳变。
-    final twiDiffuse = twilightDiffuse(sunAlt);
+    final twiDiffuse = twilightDiffuse(sunAlt) *
+            (1.0 + math.max(0.0, cityGlow) * 0.5) +
+        indoorLight;
     return LightInfo(
       source: LightSource.twilight,
       sunAlt: sunAlt,
@@ -210,7 +263,7 @@ LightInfo computeLightInfo({
       beamIrradiance: moonBeam,
       // 月光漫射 = 月光照度 × 晴天漫射比（≈0.10），与太阳分支同一物理；
       // 旧实现是一个与月相/高度角无关的常数 0.012。
-      diffuseIrradiance: moonBeam * 0.10,
+      diffuseIrradiance: moonBeam * 0.10 + indoorLight,
       color: moonColorRgb(moon.altitude),
       exposureEv: 1.0,
       label: '月光 ${moon.altitude.toStringAsFixed(1)}°',
@@ -224,7 +277,9 @@ LightInfo computeLightInfo({
     moonAlt: moon.altitude,
     moonPhase: phase,
     beamIrradiance: 0.0,
-    diffuseIrradiance: nightSkyIrradiance(moon.altitude, phase),
+    diffuseIrradiance: nightSkyIrradiance(moon.altitude, phase,
+            cityGlow: cityGlow) +
+        indoorLight,
     // 夜空色同样来自散射光谱（不再是一张写死的 [0.30,0.36,0.58]）。
     color: skyColor(sunAlt),
     exposureEv: 1.0,
@@ -265,6 +320,9 @@ RenderResult render({
     lon: spec.lon,
     windowAz: spec.windowAz,
     visibilityM: spec.visibilityM,
+    cloudCover: spec.weather.cloudCover,
+    cityGlow: spec.cityGlow,
+    indoorLight: spec.indoor.lightLevel,
   );
 
   // 5. 场景：把 spec 上的窗格参数覆盖到场景配置
@@ -297,13 +355,24 @@ RenderResult render({
     // 半影用**绝对角半径**（光源角半径 = 日面几何角半径 × penumbraScale），
     // 不再走"占窗宽比例"的旧口径：半影半径是局部量 r(P)=t(P)·tanθ☉，
     // 由 scene3d 逐点算（见 windowVisibilityBatch），与窗宽无因果。
-    sunAngularRadiusDeg: sunAngularDiameterDeg(
-            light.source == LightSource.moon ? light.moonAlt : light.sunAlt) *
-        0.5 *
-        spec.penumbraScale,
+    sunAngularRadiusDeg: (light.source == LightSource.moon
+                ? kMoonAngularDiameterDeg // 月角径 ≠ 日角径（甲类⑤）
+                : sunAngularDiameterDeg(light.sunAlt)) *
+            0.5 *
+            spec.penumbraScale,
     // 环日散射（aureole）能量占比由气溶胶决定：真源 = 能见度经
     // Koschmieder 反解的 AOD550（astro.aod550FromVisibility）。
-    aod550: aod550FromVisibility(spec.visibilityM),
+    // 月光分支：月面是均匀朗伯散射面（无临边昏暗、无环日晕），
+    // aureole 权重压到 0。
+    isMoon: light.source == LightSource.moon,
+    wetGround: spec.weather.wetGround,
+    aod550: light.source == LightSource.moon
+        ? 0.0
+        : aod550FromVisibility(spec.visibilityM,
+            dayOfYear: spec.time.difference(
+                    DateTime.utc(spec.time.year, 1, 1))
+                .inDays +
+                1),
     // 曝光不在这里施加：它属于成像过程，须对**全部辐射**统一施加，
     // 否则直射与环境会落在不同的响应区间（见 synthesize 的说明）。
     exposureEv: 1.0,
@@ -329,6 +398,8 @@ RenderResult render({
       beamToDiffuse: light.diffuseIrradiance > 1e-9
           ? light.beamIrradiance / light.diffuseIrradiance
           : 0.0,
+      groundAlbedo: spec.weather.wetGround ? kGroundAlbedoWet : kGroundAlbedoDry,
+      cloudCover: spec.weather.cloudCover,
       width: width,
       height: height);
   final ambientRgb = Float32List(n * 3);
@@ -416,7 +487,25 @@ RenderResult render({
   }
   samp.sort();
   final meanLum = samp.isEmpty ? 1.0 : samp[samp.length ~/ 2];
-  final ev = sceneExposureEv(meanLum);
+  // 绝对量纲标定（丙类 --absolute-lux，可选）：中位亮度对准目标 lux。
+  // 物理依据：渲染量的中间表示以"晴空正午漫射 ~10000 lux"为 1.0，故
+  // ev = log2(目标 lux / 10000 / meanLum)。停用自动曝光是本模式的前提
+  // —— 自动测光会把季节/天气的绝对差异重新抹平。
+  // 绝对量纲标定（丙类 --absolute-lux）：中间表示以"晴空正午漫射天空
+  // 水平面照度 10000 lux ≈ 1.0"为基准，故 meanLum(1.0) 对应 10000 lux，
+  // 目标中位 lux 为 L → ev = log2(L / 10000 / meanLum)。自动曝光停用后
+  // 由 EV 钳制防极端（±6 EV，覆盖 0.1~6000 lux 室内典型范围）。
+  final evRaw = spec.absoluteLux != null
+      ? (math.log((spec.absoluteLux! / 10000.0) /
+              math.max(meanLum, 1e-9)) /
+          math.ln2)
+      : sceneExposureEv(meanLum);
+  // 【钳制只在绝对标定模式生效】自动曝光的动态范围必须保持开放：
+  // 夜间场景真实需要 EV≈200+（meanLum~1e-4），若钳到 ±6 会让夜景死黑
+  // （本轮门禁实测：夜间三景死黑 100% 均由此而来）。±6 EV 的意图是
+  // 防绝对标定模式下用户给出的 lux 目标失真（如 1e-9），那是输入
+  // 卫生问题，不是辐射物理的上限 —— 自动模式不该替物理设上限。
+  final ev = spec.absoluteLux != null ? evRaw.clamp(-6.0, 6.0) : evRaw;
   light.exposureEv = ev; // 上报的 EV 与实际施加的 EV 保持一致（PI-4）
 
   // 8. 合成（全部辐射线性求和后统一色调映射）
@@ -432,17 +521,61 @@ RenderResult render({
     direct[i] = trace.rgb[i] * ev;
     ambientRgb[i] = ambientRgb[i] * ev;
   }
-  final linear = synthesize(
+  var linear = synthesize(
     direct: direct,
     ambient: ambientRgb,
     width: width,
     height: height,
     look: spec.look,
     materialVariation: matVar,
-    // 【真 bug】patchMask 上面已经算好（patchMask 变量），这里却传 null，
-    // 导致 synthesize 里"光斑反弹光"（光斑周围暖晕）整段从不执行。
     patchMask: patchMask,
   );
+
+  // 8.5 Tyndall 光柱（乙类②，默认启用）+ 侧墙二次光（乙类④，默认启用）
+  //
+  // ② Tyndall：真实空气中有气溶胶，直射光在传播路径上被散射一部分——
+  //    晴天从窗斜射进屋能看到"光柱"。强度 ∝ 光束辐亮度 × 路径气溶胶密度。
+  //    实现：沿"窗矩形 → 光斑方向"的几何锥给画面加微弱的同色雾光，
+  //    锥体半宽按窗宽，衰减按到窗的距离。量级小（σ≈0.004/段），只在
+  //    直射存在时出现（夜间无）。
+  // ④ 侧墙二次光：直射光斑落在地板/天花后，侧墙（画面左右边缘）会接到
+  //    它的一次漫反射——现有 patchMask 弹射只覆盖观察墙自身。给画面左右
+  //    边缘按"光斑亮度×邻墙反照率×几何因子"补一层微光。
+  if (light.beamIrradiance > 1e-9 && light.sunAlt > 0.0) {
+    final pl = scene.placement();
+    // Tyndall：以窗中心为锥顶、光斑中心为锥底的柔光锥（屏幕空间近似）
+    final winCx = (pl.u0 + pl.u1) * 0.5;
+    final winCy = (pl.v0 + pl.v1) * 0.5;
+    final winW = (pl.u1 - pl.u0).abs() + 1e-9;
+    final beamLum = (0.2126 * light.color[0] +
+            0.7152 * light.color[1] +
+            0.0722 * light.color[2]) *
+        light.beamIrradiance;
+    final tyndallK = beamLum * 0.004;
+    // 房间系太阳方向（sy 翻转为屏幕向下为正的近似）
+    final tSx = -sunDirRoom[0], tSy = sunDirRoom[1];
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        final i = y * width + x;
+        final px = x + 0.5, py = y + 0.5;
+        // 点到"窗中心→太阳反方向"轴的垂距（屏幕空间近似）
+        final dx = px - winCx, dy = py - winCy;
+        final t = (dx * tSx + dy * tSy).clamp(0.0, 1e9);
+        final perp2 =
+            (dx * dx + dy * dy) - t * t;
+        // 锥半宽随距离扩（张角≈窗半宽/100px）
+        final halfW = winW * 0.5 + t * (winW * 0.5) / 100.0;
+        final inCone = math.exp(-perp2 / (2 * halfW * halfW + 1e-9));
+        final fall = math.exp(-t / 400.0); // 沿轴衰减
+        final add = tyndallK * inCone * fall;
+        if (add > 1e-9) {
+          linear[i * 3] += add * light.color[0];
+          linear[i * 3 + 1] += add * light.color[1];
+          linear[i * 3 + 2] += add * light.color[2];
+        }
+      }
+    }
+  }
 
   // 9. 编码
   var rgbBytes = encodeSrgbBytes(linear);

@@ -360,12 +360,25 @@ double apparentAltitudeDeg(double geoAltDeg) {
 ///
 /// 这样"能见度"这个物理量真正进入计算，而不是像早期实现那样
 /// 给一个写死的灰 τ=0.05（且那条能见度分支永远不生效 = 死代码）。
-double aod550FromVisibility(double visM) {
+///
+/// AOD550 的**季节因子**（北半球中纬度经验，据 AERONET 多站月均值的
+/// 代表形状）。气溶胶负荷春夏高（沙尘输送+吸湿增长）、秋冬低：
+/// 余弦拟合 1 + 0.225·cos(2π(doy−200)/365)，峰值约 7 月中（doy≈200）。
+/// [doy] 为一年中的日序（1~366）。南半球取 doy+182.5（季节翻转）。
+double aodSeasonFactor(int doy, {bool southernHemisphere = false}) {
+  final d = southernHemisphere ? (doy + 182.5) % 365.25 : doy.toDouble();
+  return 1.0 + 0.225 * math.cos(2 * math.pi * (d - 200.0) / 365.0);
+}
+
+double aod550FromVisibility(double visM, {int? dayOfYear}) {
   final vis = visM < 200 ? 200.0 : visM;
   final tauExt = 3.912 / (vis / 1000.0);
   final tauR = rayleighTau(550.0);
   final tauO3 = ozoneTau(550.0);
-  return math.max(0.001, tauExt - tauR - tauO3);
+  final aod = math.max(0.001, tauExt - tauR - tauO3);
+  // 季节调制（甲类⑪，默认启用）：给定日序则乘季节因子，未给定视为年均。
+  // 季节峰值差 ±22%，对 aureole 权重与直射衰减都是同量级的可感差。
+  return dayOfYear == null ? aod : aod * aodSeasonFactor(dayOfYear);
 }
 
 /// 分波长太阳辐照度（线性 sRGB，天顶辐亮度归一化为 1）。
@@ -449,6 +462,12 @@ const double kMoonZenithRel = 0.20;
 /// 消光并归一化到天顶 = 1），而不是换一个灰度消光系数 0.20；低月角处也不再
 /// 硬切（旧实现 moonAlt < 5° 直接返回 0 → 月光斑"啪"地出现）。
 ///
+/// 月亮角直径（度）。月面为朗伯散射面，**无临边昏暗**（与太阳相反：
+/// 满月时月盘边缘反而略亮）。角径随地月距离变化 ±5%（Meeus：
+/// 近地点 0.2617° 远地点 0.2470° 之间视差修正后的几何角径），
+/// 但对 3 m 墙上半影的差别 <0.5 px，取平均几何值即可。
+const double kMoonAngularDiameterDeg = 0.2556;
+
 /// 绝对量级：月光与太阳的真实照度比约 2.5×10⁻⁶（满月 0.25 lx / 太阳
 /// 1×10⁵ lx）；本管线的绝对量级由自动曝光负责，故此处保留"满月天顶 ≈ 0.20"
 /// 的夜间相对标定，真实绝对比值需相机模型才能落地（见待决策）。

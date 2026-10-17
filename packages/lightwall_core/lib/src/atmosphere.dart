@@ -22,6 +22,9 @@ const double kRoomAlbedo = 0.55;
 /// 干燥地面反照率。
 const double kGroundAlbedoDry = 0.25;
 
+/// 湿地面（雨后）反照率：水膜镜面化 + 暗化。丙类 --cloud --wet-ground 用。
+const double kGroundAlbedoWet = 0.08;
+
 // 说明：旧实现有 `splitIrradiance`（返回 beam/diffuse/hardness，全仓库无
 // 消费者）与 `eyeExposureEv`（按太阳高度角淡出的增益，用"入射照度取幂"、
 // 量纲无意义，且已被 sceneExposureEv 取代、渲染路径不再调用）——两者均为
@@ -68,8 +71,9 @@ const double kHorizonBlendBand = 0.06;
 /// 早期实现把地平线以下写死成 0.12，比真实值暗 **5~15×**（含直射的
 /// 日照地面与晴空天顶同量级甚至更亮），而且与文件里同样定义却从未使用的
 /// `kGroundAlbedoDry = 0.25` 直接矛盾。
-double groundRadianceRelative(double beamToDiffuse) {
-  return kGroundAlbedoDry *
+double groundRadianceRelative(double beamToDiffuse,
+    {double groundAlbedo = kGroundAlbedoDry}) {
+  return groundAlbedo *
       (horizontalDiffuseIntegral() / math.pi) *
       (1.0 + math.max(0.0, beamToDiffuse));
 }
@@ -85,15 +89,18 @@ double _skyRadiance(
     double gammaRad,
     double sunZenithDeg,
     double sunAltDeg,
-    double beamToDiffuse) {
+    double beamToDiffuse,
+    {double groundAlbedo = kGroundAlbedoDry, double cloudCover = 0.0}) {
   // 地平线以下：室外地面/建筑立面。用**物理公式**算（不再是常数 0.12）：
   //   L_ground/L_z = ρ_g·(I_h/π)·(1 + 直射/漫射比)
-  final belowHorizon = groundRadianceRelative(beamToDiffuse);
+  final belowHorizon = groundRadianceRelative(beamToDiffuse,
+      groundAlbedo: groundAlbedo);
   final blend = kHorizonBlendBand;
   if (dirY <= -blend) return belowHorizon;
   final zenithRad = math.acos(dirY.clamp(-1.0, 1.0));
   final sky = skyLuminanceFactor(
-      zenithRad.clamp(0.0, math.pi * 0.5), gammaRad, sunZenithDeg, sunAltDeg);
+      zenithRad.clamp(0.0, math.pi * 0.5), gammaRad, sunZenithDeg, sunAltDeg,
+      cloudCover: cloudCover);
   if (dirY >= blend) return sky;
   final t = (dirY + blend) / (2 * blend); // 0 → 下, 1 → 上
   return belowHorizon * (1 - t) + sky * t;
@@ -116,6 +123,8 @@ Float64List apertureIlluminance(
   List<double>? toSun,
   double sunAltDeg = 45.0,
   double beamToDiffuse = 0.0,
+  double groundAlbedo = kGroundAlbedoDry,
+  double cloudCover = 0.0,
   int samplesU = 8,
   int samplesV = 8,
 }) {
@@ -182,8 +191,9 @@ Float64List apertureIlluminance(
         final cosG =
             (dirX * ts[0] + dirY * ts[1] + dirZ * ts[2]).clamp(-1.0, 1.0);
         final lum =
-            _skyRadiance(
-                dirY, math.acos(cosG), sunZenithDeg, sunAltDeg, beamToDiffuse);
+            _skyRadiance(dirY, math.acos(cosG), sunZenithDeg, sunAltDeg,
+                beamToDiffuse,
+                groundAlbedo: groundAlbedo, cloudCover: cloudCover);
 
         acc += dA * (cosWin * inv) * cosWall * inv2(r2) * lum;
       }
@@ -318,6 +328,8 @@ Float64List illuminationField(
   List<double>? toSun,
   double sunAltDeg = 45.0,
   double beamToDiffuse = 0.0,
+  double groundAlbedo = kGroundAlbedoDry,
+  double cloudCover = 0.0,
   int width = 0,
   int height = 0,
   int maxWork = 512,
@@ -477,6 +489,13 @@ double windowIncidenceCos(List<double> toSun, List<double> windowNormal) =>
 /// 普通窗玻璃折射率（钠钙玻璃 ≈ 1.52）。
 const double kGlassIor = 1.52;
 
+/// 普通钠钙浮法玻璃（含铁）的**光谱选择性吸收**（乙类⑦，默认启用）：
+/// 透过率在 550 nm（绿）处最高，红端（Fe²⁺ 近红外尾延伸入可见）与蓝端
+/// （Fe³⁺ 电荷转移）各低约 4~6% → 玻璃厚侧看呈绿色、透射光微偏绿。
+/// 归一化到绿通道（保持总能量不变），这是室内直射光斑偏冷绿的物理来源。
+/// Low-E/超白玻璃可近似取 1（无选择吸收）。
+const glassTint = <double>[0.955, 1.0, 0.965]; // R,G,B 相对透过率
+
 /// 垂直入射的界面反射率 F0 = ((n−1)/(n+1))² ≈ 0.0426（n = 1.52）。
 double get kGlassF0 {
   final r = (kGlassIor - 1.0) / (kGlassIor + 1.0);
@@ -529,6 +548,34 @@ double glassTransmittance(double cosTheta, {double ior = kGlassIor}) {
   final (rs, rp) = fresnelComponents(c, ior);
   final ts = (1.0 - rs) / (1.0 + rs);
   final tp = (1.0 - rp) / (1.0 + rp);
+  return (0.5 * (ts + tp)).clamp(0.0, 1.0);
+}
+
+/// **中空双玻**（双层玻璃，现代窗默认）的总透射。
+///
+/// 两片平行玻璃 + 空气夹层：每片各有两个界面（外侧/内侧），四个界面串联。
+/// 因各片入射角相同（平行板），单片双界面透射 T1 = (1−R)/(1+R)（原函数），
+/// 两片总透射为**逐偏振串联**：
+///   T_total = T1² / (1 + R²·T1²·(1/(1-R²)) ...)  —— 精确式含片间多次反射。
+/// 平行板间多次反射使透射**略高于**单板平方（被反射的光仍有一半机会再进）：
+///   T = T1² / (1 − R²)，
+/// 其中 R 为单界面反射率（非偏振平均）。该式在小掠射时自动趋于
+/// T1²/(1−R²) → 高于单板值，符合能量守恒上限（全反射时多板不再叠加损耗）。
+///
+/// 对比：单玻 T≈0.918（法向），双玻 T≈0.848（法向）→ 室内直射**系统性
+/// 低约 8%**，这正是"真实现代窗户更暗"的物理原因。
+double doubleGlassTransmittance(double cosTheta, {double ior = kGlassIor}) {
+  final c = cosTheta.clamp(0.0, 1.0);
+  if (c <= 0.0) return 0.0;
+  final (rs, rp) = fresnelComponents(c, ior);
+  // 单片双界面（原 glassTransmittance 的逐偏振值）
+  final t1s = (1.0 - rs) / (1.0 + rs);
+  final t1p = (1.0 - rp) / (1.0 + rp);
+  // 两片串联 + 片间多次反射修正：T2 = T1²/(1−R²)，R 取非偏振平均
+  final rAvg = 0.5 * (rs + rp);
+  final denom = 1.0 - rAvg * rAvg;
+  final ts = t1s * t1s / denom;
+  final tp = t1p * t1p / denom;
   return (0.5 * (ts + tp)).clamp(0.0, 1.0);
 }
 

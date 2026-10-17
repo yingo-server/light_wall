@@ -26,8 +26,8 @@ import 'mathx.dart';
 /// 相机效果与画面参数。
 ///
 /// 除 [exposure]/[acesGain]（曝光，物理量）与 [saturation]/[contrast]
-/// （显示传递，见各自说明）之外，其余字段都**没有物理依据**，默认值一律
-/// 取"不生效"，只有调用方显式打开才会改变画面。
+/// 除 [bloomStrength]（镜头散射，有物理依据，默认 0.15 启用）外，其余
+/// 调味字段都**没有物理依据**，默认值一律取"不生效"。
 class LookConfig {
   const LookConfig({
     this.acesGain = 1.0,
@@ -39,6 +39,7 @@ class LookConfig {
     this.exposure = 1.0,
     this.saturation = 1.0,
     this.contrast = 1.0,
+    this.bloomStrength = 0.15,
   });
 
   /// 【CO-1】色调映射前的曝光增益。
@@ -87,6 +88,11 @@ class LookConfig {
 
   /// 对比度（等价于改变显影 γ / 显示 EOTF 的 γ，单调幂律，0→0、1→1）。
   final double contrast;
+
+  /// 镜头 bloom（乙类①，默认 0.15 启用）：强光源（>1.0 线性）向周围泄漏
+  /// 的柔光晕。物理来源：镜头内多组镜面的散射（veiling glare）与人眼晶状
+  /// 体散射；真实照片里没有"纯白死光斑"。
+  final double bloomStrength;
 
   LookConfig copyWith({
     double? exposure,
@@ -354,7 +360,32 @@ Float32List synthesize({
     }
   }
 
-  // 9. （镜头渐晕已上移到线性域，见第 4.5 步 —— CO-2 / CO-10）
+  // 9. 镜头 bloom（乙类①，默认 0.15 启用）—— 在 ACES 之前的线性域做：
+  //    对超过 1.0 的亮度提取两层高斯模糊（8/32 px）按 bloomStrength 叠回。
+  //    物理对应镜头内镜面散射（veiling glare）与人眼晶状体散射——真实
+  //    照片里强光源周围必有柔光晕，没有"边缘刀切的白斑"。在线性域施加
+  //    保证能量守恒（不是显示域的提亮）。
+  if (look.bloomStrength > 0) {
+    final bright = Float32List(n);
+    for (var i = 0; i < n; i++) {
+      final j = i * 3;
+      final lum = 0.2126 * out[j] + 0.7152 * out[j + 1] + 0.0722 * out[j + 2];
+      final b = lum > 1.0 ? lum - 1.0 : 0.0;
+      bright[i] = b;
+    }
+    final b1 = blurGray(bright, width, height, 8.0);
+    final b2 = blurGray(bright, width, height, 32.0);
+    final k = look.bloomStrength;
+    for (var i = 0; i < n; i++) {
+      final j = i * 3;
+      final add = (b1[i] * 0.6 + b2[i] * 0.4) * k;
+      out[j] += add;
+      out[j + 1] += add;
+      out[j + 2] += add;
+    }
+  }
+
+  // 10. （镜头渐晕已上移到线性域，见第 4.5 步 —— CO-2 / CO-10）
 
   // 10. "CMOS 响应曲线"（无物理依据，默认关闭）—— CO-4
   if (look.sensorCurveStrength > 0) {
@@ -434,8 +465,16 @@ void _addFirstBounce(
   final inner = blurGray(src, w, h, radius);
   final outer = blurGray(src, w, h, radius * 2.0);
   final k = scale / math.pi;
+  // ── 二阶弹射（甲类⑦，默认启用）──
+  // 一阶 = 光斑 → 墙（暖晕）。二阶 = "光斑→墙"的漫反射场再从整面墙反弹
+  // 一次：能量按 ρ/π 再衰减（ρ 取墙平均反照率的代表值），模糊半径加倍
+  // （再走一跳，空间频率再降一个倍频程）。量级 ~ 一阶 × ρ ≈ 0.2，
+  // 对直射暗部（影子最深处）贡献一个可感的底亮，消除"影子里绝对死黑"。
+  final outer2 = blurGray(outer, w, h, radius * 4.0);
+  final k2 = k * 0.2; // ρ_wall/π ≈ 0.75/π 的一阶已含 1/π，二阶再乘 ρ
   for (var i = 0; i < n; i++) {
-    final v = math.max(outer[i] - inner[i], 0.0) * k;
+    final v = math.max(outer[i] - inner[i], 0.0) * k +
+        math.max(outer2[i] - outer[i], 0.0) * k2;
     if (v <= 0) continue;
     out[i * 3] += v;
     out[i * 3 + 1] += v;
@@ -448,19 +487,38 @@ void _addFirstBounce(
 /// 线性 RGB → sRGB 字节流（RGB，长度 w*h*3）。
 ///
 /// 传递函数用 IEC 61966-2-1 的分段定义（见 [linearToSrgb]），并在量化前加
-/// **TPDF 抖动**（两个独立均匀分布之和 → 三角分布，幅度 ±1 LSB）—— CO-11：
-/// 8bit 量化在暗部/渐变上会产生肉眼可见的阶梯色带（本工程实测夜景 26.7% 的
-/// 像素为纯 0、暮光 98% 的像素挤在 0~31 区间，正是色带最容易出现的区域）。
-/// 抖动是确定性的（由像素序号哈希给出），不破坏渲染的可复现性。
-Uint8List encodeSrgbBytes(Float32List linear) {
+/// 两层噪声（均为确定性哈希，不破坏可复现性）：
+///
+/// 1. **TPDF 抖动**（±1 LSB 三角分布）—— CO-11：8bit 量化在暗部/渐变上
+///    产生肉眼可见的阶梯色带（本工程实测夜景 26.7% 像素纯 0、暮光 98%
+///    挤在 0~31 区间，正是色带高发区）。
+/// 2. **散粒噪声**（甲类⑧，默认启用）—— 光子到达的泊松涨落，σ=√N。
+///    真实相机（与人眼锥细胞）在低照度下都有可感的颗粒：夜景 σ_photon
+///    按**线性信号平方根**给出，暗部相对涨落大（1/√N 大）、亮部趋于
+///    平滑——这正是夜景照片"颗粒感"的物理来源。强度由 [shotGain] 控制
+///    （1.0 = 全幅传感器在 100 ISO 的典型值；暗部像素 σ≈4 LSB）。
+///    实现：Box-Muller 把两个均匀哈希变成高斯，乘 √signal。
+Uint8List encodeSrgbBytes(Float32List linear, {double shotGain = 1.0}) {
   final out = Uint8List(linear.length);
   const lsb = 1.0 / 255.0;
   for (var i = 0; i < linear.length; i++) {
-    final s = linearToSrgb(linear[i]);
+    final v = linear[i];
+    final s = linearToSrgb(v);
+    // 散粒：线性域 σ ∝ √signal（再经 sRGB 提亮暗部 → 颗粒均匀可见）。
+    // 只在信号明显大于量化底时施加（极暗部由 TPDF 主导，避免双重颗粒）。
+    var shot = 0.0;
+    if (shotGain > 0 && v > 1e-5) {
+      final u1 = hashNoise(i, 2, 0x2545f491);
+      final u2 = hashNoise(i, 3, 0x2545f491);
+      // Box-Muller（u1 避 0）
+      final r = math.sqrt(-2.0 * math.log(math.max(u1, 1e-12)));
+      shot = r * math.cos(2 * math.pi * u2) *
+          shotGain * 0.004 * math.sqrt(v); // 0.004: 满幅≈10000 lux 下 σ~8 LSB
+    }
     final u1 = hashNoise(i, 0, 0x5f3759df);
     final u2 = hashNoise(i, 1, 0x5f3759df);
     final d = (u1 + u2 - 1.0) * lsb; // TPDF，[-1,+1] LSB，无直流偏置
-    out[i] = ((s + d) * 255.0 + 0.5).clamp(0, 255).toInt();
+    out[i] = ((s + shot + d) * 255.0 + 0.5).clamp(0, 255).toInt();
   }
   return out;
 }
