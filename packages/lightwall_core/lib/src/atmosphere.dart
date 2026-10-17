@@ -54,6 +54,10 @@ double horizontalDiffuseIntegral({int nTheta = 32, int nPhi = 64}) {
   return acc;
 }
 
+/// 地平线过渡带宽度（方向余弦）。_skyRadiance 与窗面颜色场共用，
+/// 单一真源 —— 两处不一致会在地平线产生台阶。
+const double kHorizonBlendBand = 0.06;
+
 /// 室外地面（地平线以下方向）的相对辐亮度（天顶亮度 = 1）。
 ///
 /// 物理：地面自身被"直射 + 漫射"照亮后再朗伯反射
@@ -85,7 +89,7 @@ double _skyRadiance(
   // 地平线以下：室外地面/建筑立面。用**物理公式**算（不再是常数 0.12）：
   //   L_ground/L_z = ρ_g·(I_h/π)·(1 + 直射/漫射比)
   final belowHorizon = groundRadianceRelative(beamToDiffuse);
-  const blend = 0.06; // 地平线附近的过渡带（方向余弦）
+  final blend = kHorizonBlendBand;
   if (dirY <= -blend) return belowHorizon;
   final zenithRad = math.acos(dirY.clamp(-1.0, 1.0));
   final sky = skyLuminanceFactor(
@@ -224,7 +228,7 @@ Float64List groundShareField(
   final u0 = pl.u0, u1 = pl.u1, v0 = pl.v0, v1 = pl.v1;
   final plane = pl.planeCoord;
   final eastWest = pl.wall == Wall.east || pl.wall == Wall.west;
-  const blend = 0.06; // 地平线过渡带（方向余弦，与 _skyRadiance 一致）
+  final blend = kHorizonBlendBand;
   for (var i = 0; i < n; i++) {
     if (valid[i] <= 0) continue;
     final o = i * 3;

@@ -39,7 +39,7 @@ const ({double a, double b, double c, double d, double e}) kClearSky =
 ///
 /// [zenithRad]：该方向的天顶角（0 = 天顶，π/2 = 地平线）
 /// [gammaRad] ：该方向与太阳的夹角
-/// [sunZenithDeg]：太阳天顶角（决定系数档位）
+/// [sunZenithDeg]：太阳天顶角（**仅为兼容签名保留**：当前晴空只用单一固定系数表，不参与计算）
 /// [sunAltDeg]：太阳高度角（用于太阳落入地平线时的退化处理）
 double skyLuminanceFactor(
     double zenithRad, double gammaRad, double sunZenithDeg, double sunAltDeg) {

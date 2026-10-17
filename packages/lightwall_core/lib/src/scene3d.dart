@@ -538,9 +538,10 @@ class Scene3D {
     //
     // 环日/直射能量比 wAureole 不写死：由气溶胶光学厚度 AOD550 给出。
     // 经验依据（Hess & Koepke 对 CSR 的参数化，晴空气溶胶量级）：
-    //   AOD→0（瑞利大气）时环日辐射趋近瑞利前向峰值，占直射约 5%；
-    //   AOD=0.05（23 km 能见度）约 12%；AOD=0.4（霾）可达 30%。
-    // 用有理式 w = 0.05 + 0.19·√(AOD/(AOD+0.05)) 拟合上述三点，单调有界。
+    //   AOD→0（瑞利大气）环日辐射趋近瑞利前向峰值，占直射约 5%；
+    //   洁净大气（AOD≈0.05）约 18%；重霾（AOD≈0.4）约 23%。
+    // 有理式 w = 0.05 + 0.19·√(AOD/(AOD+0.05)) 代回：
+    //   AOD=0.05 → 0.184，AOD=0.4 → 0.229（单调有界，锚点与式自洽）。
     final aod = aod550.clamp(0.0, 1.5);
     final wAureole =
         0.05 + 0.19 * math.sqrt(aod / (aod + 0.05));
@@ -555,7 +556,6 @@ class Scene3D {
     final sinG = Float64List(_kConeSamples);
     final wgt = Float64List(_kConeSamples);
     final phi = Float64List(_kConeSamples);
-    var sumW = 0.0;
     // 先求日面临边昏暗和，用于能量比归一
     var ldSum = 0.0;
     for (var s = 0; s < nDisk; s++) {
@@ -578,7 +578,6 @@ class Scene3D {
         wgt[s] = (1.0 - wAureole) * (1.0 - _kLimbDarkeningU * (1.0 - cg)) /
             math.max(ldSum, 1e-9);
       }
-      sumW += wgt[s];
     }
     // 与 toSun 正交的基
     final (b1x, b1y, b1z, b2x, b2y, b2z) = _orthoBasis(tx, ty, tz);
@@ -665,8 +664,12 @@ class Scene3D {
       }
 
       // ── 半影像素：方向空间采样（逐像素方位旋转，去相关/去结构走样）──
+      // 注意归一分母：被遮挡/出界丢弃的样本要**从 sumW 里扣掉**（acc 只累加
+      // 有效样本）。若用整帧常数 sumW，丢弃样本会按"被吸收的光"计——半影
+      // 带整体偏暗。这里用局部 wsum 只累计本像素实际参与判定的样本权重。
       final spin = _kTwoPi * _hash01(i);
       var acc = 0.0;
+      var wsum = 0.0;
       for (var s = 0; s < _kConeSamples; s++) {
         final cp = math.cos(phi[s] + spin);
         final sp = math.sin(phi[s] + spin);
@@ -675,19 +678,27 @@ class Scene3D {
         final ly = cosG[s] * ty + sg * (cp * b1y + sp * b2y);
         final lz = cosG[s] * tz + sg * (cp * b1z + sp * b2z);
         double u, v;
+        var rayValid = false;
         if (eastWest) {
           if (lx.abs() < 1e-12) continue;
           final t = (plane - px) / lx;
           if (t <= 0) continue;
           u = pz + t * lz;
           v = py + t * ly;
+          rayValid = true;
         } else {
           if (lz.abs() < 1e-12) continue;
           final t = (plane - pz) / lz;
           if (t <= 0) continue;
           u = px + t * lx;
           v = py + t * ly;
+          rayValid = true;
         }
+        if (!rayValid) continue;
+        // 方向本身有效（与窗平面可求交）即计入分母；随后按落点是否在
+        // 玻璃/窗洞内决定贡献。这样"被窗棂挡住"是物理遮挡（不贡献），
+        // 而"射线方向不可求交"（数值退化）才不计入归一。
+        wsum += wgt[s];
         if (_inPanes(panes, u, v)) {
           // reveal：外墙侧落点也必须在窗洞开口内
           final to = eastWest ? (planeOuter - px) / lx : (planeOuter - pz) / lz;
@@ -698,7 +709,7 @@ class Scene3D {
           }
         }
       }
-      out[i] = acc / sumW;
+      out[i] = wsum > 1e-12 ? acc / wsum : 0.0;
     }
     return out;
   }

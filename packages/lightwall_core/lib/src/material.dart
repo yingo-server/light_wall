@@ -78,7 +78,10 @@ MaterialMaps extractMaterial(Float32List rClean, int w, int h) {
   // 不同底图的绝对反射率。
   final albedo = Float32List(n * 3);
   for (var i = 0; i < n * 3; i++) {
-    albedo[i] = rClean[i].clamp(0.0, 1.0);
+    // NaN 经 clamp 仍为 NaN（Dart clamp 不处理 NaN），会沿管线污染下游
+    // ——显式归 0（NaN 输入等价于"该通道无信息"）。
+    final c = rClean[i];
+    albedo[i] = c.isNaN ? 0.0 : c.clamp(0.0, 1.0);
   }
 
   // ── 2. 粗糙度：室内涂装墙面/壁纸的物理合理常数（α≈0.5）──

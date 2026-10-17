@@ -126,7 +126,13 @@ double alphaDeg(double lambda, double eps, double delta) {
   for (var iter = 0; iter < 3; iter++) {
     final cosH = (sinAlt0 - math.sin(phi) * math.sin(decl)) /
         (math.cos(phi) * math.cos(decl));
-    if (cosH > 1.0 || cosH < -1.0) return (rise: null, set: null); // 极夜/极昼
+    if (cosH > 1.0 || cosH < -1.0) {
+      // 极夜/极昼。但注意：这是**迭代中途**的判定——decl 在回代中漂移，
+      // 边界日期上第 1 轮可能已得到合理解，被这里的 return 丢弃。
+      // 已有解则返回既有解；首轮即越界才是真极昼/极夜。
+      if (rise != null && set != null) break;
+      return (rise: null, set: null);
+    }
     final hDeg = math.acos(cosH) / kDeg;
     final noon = _solarDecl(base.add(const Duration(hours: 12)));
     final noonH = 12.0 - lon / 15.0 - noon.eot;

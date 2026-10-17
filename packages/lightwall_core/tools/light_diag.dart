@@ -71,6 +71,15 @@ Map<String, double> stats(Uint8List rgb) {
   };
 }
 
+/// 单个场景异常不拖垮整个门禁：捕获后由调用方记为该 case 的失败行。
+T? tryOrNull<T>(T Function() f) {
+  try {
+    return f();
+  } catch (_) {
+    return null;
+  }
+}
+
 void main(List<String> argv) {
   const w = 320, h = 180;
   final base = syntheticWall(w, h);
@@ -79,7 +88,7 @@ void main(List<String> argv) {
 
   for (final c in kCases) {
     final t = DateTime.parse(c.time);
-    final res = render(
+    final res = tryOrNull(() => render(
       baseRgb: base,
       width: w,
       height: h,
@@ -89,7 +98,18 @@ void main(List<String> argv) {
         lon: kLon,
         windowAz: c.window,
       ),
-    );
+    ));
+    if (res == null) {
+      fails++;
+      rows.add(<String, Object?>{
+        'case': c.name,
+        'source': 'EXCEPTION',
+        'sunAlt': 0.0, 'beam': 0.0, 'cos': 0.0, 'visible': 0.0, 'ev': 0.0,
+        'mean': 0.0, 'over': 0.0, 'dark': 0.0,
+        'problems': <String>['渲染抛出异常（内部错误）'],
+      });
+      continue;
+    }
     final s = stats(res.rgb);
     final beam = res.light.beamIrradiance;
     final vis = res.albedoStats['visible_ratio'] ?? 0;

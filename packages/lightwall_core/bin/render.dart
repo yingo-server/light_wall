@@ -65,20 +65,53 @@ void main(List<String> argv) {
   }
 
   final windowAz = _windowAzFrom(args['window'] ?? 'right');
-  final lat = double.tryParse(args['lat'] ?? '') ?? 39.9042;
-  final lon = double.tryParse(args['lon'] ?? '') ?? 116.4074;
-  final time =
-      args['time'] != null ? DateTime.parse(args['time']!) : DateTime.now();
+  double _req(String k, double dflt, String name) {
+    final raw = args[k];
+    if (raw == null) return dflt;
+    final v = double.tryParse(raw);
+    if (v == null) {
+      stderr.writeln('错误：--$k 不是有效数字 "$raw"（$name）');
+      exit(2);
+    }
+    return v;
+  }
+  final lat = _req('lat', 39.9042, '纬度，北正');
+  final lon = _req('lon', 116.4074, '经度，东正');
+  DateTime time;
+  final timeRaw = args['time'];
+  if (timeRaw != null) {
+    final t = DateTime.tryParse(timeRaw);
+    if (t == null) {
+      stderr.writeln('错误：无法解析时间 "$timeRaw"（示例：2025-06-21T09:00:00+08:00，务必带时区）');
+      exit(2);
+    }
+    time = t;
+  } else {
+    time = DateTime.now();
+  }
 
   Float32List? textAlpha;
   final maskPath = args['text-alpha'];
+  int maskW = 0, maskH = 0;
   if (maskPath != null && File(maskPath).existsSync()) {
     final mask = loadImageFile(maskPath);
-    textAlpha = Float32List(w * h);
-    for (var i = 0; i < w * h; i++) {
-      final si = (i % mask.width + (i ~/ mask.width) * mask.width) * 3;
-      textAlpha[i] = mask.rgb[si] / 255.0;
+    maskW = mask.width; maskH = mask.height;
+    if (maskW == w && maskH == h) {
+      textAlpha = Float32List(w * h);
+      for (var i = 0; i < w * h; i++) {
+        textAlpha[i] = mask.rgb[i * 3] / 255.0;
+      }
     }
+  }
+
+  if (textAlpha == null && maskPath != null) {
+    stderr.writeln('错误：文字蒙版文件不存在 "$maskPath"');
+    exit(2);
+  } else if (textAlpha != null &&
+      (maskW != w || maskH != h)) {
+    stderr.writeln('错误：--text-alpha 蒙版尺寸 ${maskW}x${maskH} 与底图 ${w}x$h 不一致，'
+        '请用同尺寸蒙版（生成端 make_text_mask.py 传相同 --width --height）');
+    exit(2);
   }
 
   final style = (args['style'] ?? 'default').toLowerCase();
@@ -104,6 +137,7 @@ void main(List<String> argv) {
     roomD: d('room-d') ?? 4.5,
   );
 
+  final visibilityM = _req('visibility', 20000.0, '大气能见度，米');
   final look = LookConfig(
     exposure: double.tryParse(args['exposure'] ?? '') ?? 1.0,
     saturation: double.tryParse(args['saturation'] ?? '') ?? 1.0,
@@ -121,6 +155,7 @@ void main(List<String> argv) {
     gridFrameRatio: sceneCfg.gridFrameRatio,
     seed: int.tryParse(args['seed'] ?? '') ?? 20251014,
     aged: aged,
+    visibilityM: visibilityM,
     materialCoupling: double.tryParse(args['coupling'] ?? '') ?? 0.0,
     look: look,
     applyAging: maskPath != null,
@@ -208,6 +243,7 @@ LightWall 命令行渲染器（纯 Dart · 零 Flutter / GPU 依赖）
   --window-cy <m> --window-cz <m> --window-w <m> --window-h <m>
   --camera-h <m> --camera-dist <m> --fov <deg> --room-w <m> --room-d <m>
   --width <px> --height <px>
+  --visibility <m>      大气能见度（米，默认 20000；影响太阳光谱衰减与环日散射占比）
   --style default|clean|aged
   --exposure --saturation --material --coupling
   --text-alpha <path>   文字 alpha 蒙版 PNG
