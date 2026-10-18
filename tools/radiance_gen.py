@@ -126,12 +126,13 @@ def build_scene(sky_bytes, room_txt, win_txt, tmpdir):
 
 def render_one(sky_bytes, octree, out_png, w, h, cam, exposure=0.0, nproc=8):
     """渲染单帧：rpict → pfilt → png。"""
+    # Radiance 的 -vp/-vd 需要**三个独立 token**（不接受 "x y z" 单串）
     view = [
-        "-vtv",                             # 透视视图
-        "-vp", f"{cam[0]:.3f} {cam[1]:.3f} {cam[2]:.3f}",  # 视点位
-        "-vd", f"{cam[3]:.3f} {cam[4]:.3f} {cam[5]:.3f}",  # 视线方向
-        "-vh", "90",                        # 水平视角
-        "-vv", "55",
+        "-vt", "v",                                  # 透视视图
+        "-vp", f"{cam[0]:.3f}", f"{cam[1]:.3f}", f"{cam[2]:.3f}",
+        "-vd", f"{cam[3]:.3f}", f"{cam[4]:.3f}", f"{cam[5]:.3f}",
+        "-vh", "88",
+        "-vv", "52",
     ]
     params = ["-ab", "4", "-ad", "2048", "-as", "512", "-ar", "128",
               "-aa", "0.08", "-lr", "6", "-lw", "0.002", "-n", str(nproc)]
