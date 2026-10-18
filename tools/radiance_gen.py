@@ -127,7 +127,7 @@ def build_scene(sky_bytes, room_txt, win_txt, tmpdir):
 def render_one(sky_bytes, octree, out_png, w, h, cam, exposure=0.0, nproc=8):
     """渲染单帧：rpict → pfilt → png。"""
     view = [
-        "-vtv", "180",                      # 视图类型：从相机看
+        "-vtv",                             # 透视视图
         "-vp", f"{cam[0]:.3f} {cam[1]:.3f} {cam[2]:.3f}",  # 视点位
         "-vd", f"{cam[3]:.3f} {cam[4]:.3f} {cam[5]:.3f}",  # 视线方向
         "-vh", "90",                        # 水平视角
