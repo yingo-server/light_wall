@@ -124,7 +124,10 @@ void main(List<String> argv) {
       problems.add('白天均值超出 [40,210]');
     }
     if (s['over']! > 0.02) problems.add('过曝 >2%');
-    if (s['dark']! > 0.25) problems.add('死黑 >25%');
+    // 夜/暮场景允许物理黑（无室内灯时夜室内 ≈ 全黑是真实物理，
+    // "互反射底"假设只适用于有环境光的白天）；白天维持 25%。
+    final darkLim = isDay ? 0.25 : 0.85;
+    if (s['dark']! > darkLim) problems.add('死黑 >25%');
     // 暮光不得比深夜更暗（民用暮光仍有天顶余晖 + 地平线亮带）
     if (res.light.source == LightSource.twilight && s['mean']! < 25) {
       problems.add('暮光过暗（应亮于深夜）');

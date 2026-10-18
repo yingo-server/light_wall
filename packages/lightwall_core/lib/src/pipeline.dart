@@ -55,6 +55,29 @@ class LightInfo {
   final String label;
 }
 
+/// 夜间/月光场景的**曝光目标缩放**（观察者适应模型）。
+///
+/// 物理背景：自动测光把画面中位对准显示中灰（0.18），这抹掉了昼夜的
+/// 明暗感受差异——月夜被拉亮成"白天一样"。真实感知与相机照片里，
+/// 月夜是**暗调**的：人眼视杆适应有增益但视觉系统的"参照白"不在这
+/// 个亮度级（Hunt 效应：亮度级降低 → 感知亮度对比与明度整体下降）。
+/// 相机长曝月夜（对焦墙面）的画面中位亮度也在中灰的 1/4~1/8。
+///
+/// 视觉效果（白名单语义，见 tuning.dart [kNightTargetScale] /
+/// [kMoonTargetScale]）：调大 → 夜景更亮（接近白日感）；调小 → 更暗更沉。
+double _nightExposureScale(LightSource source) {
+  switch (source) {
+    case LightSource.moon:
+      return kMoonTargetScale;
+    case LightSource.night:
+      return kNightTargetScale;
+    case LightSource.twilight:
+      return 1.0; // 暮光保持中灰（黄昏记忆对照仍在明视觉）
+    case LightSource.sun:
+      return 1.0;
+  }
+}
+
 /// 渲染参数。
 /// 天气参数（丙类，可选）。默认全晴天，与既有行为一致。
 class WeatherParams {
@@ -637,7 +660,8 @@ RenderResult render({
       ? (math.log((spec.absoluteLux! / 10000.0) /
               math.max(meanLum, 1e-9)) /
           math.ln2)
-      : sceneExposureEv(meanLum);
+      : sceneExposureEv(meanLum,
+          target: kDisplayMidGray * _nightExposureScale(light.source));
   // 【钳制只在绝对标定模式生效】自动曝光的动态范围必须保持开放：
   // 夜间场景真实需要 EV≈200+（meanLum~1e-4），若钳到 ±6 会让夜景死黑
   // （本轮门禁实测：夜间三景死黑 100% 均由此而来）。±6 EV 的意图是
