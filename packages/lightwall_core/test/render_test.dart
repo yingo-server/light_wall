@@ -98,7 +98,24 @@ void main() {
       expect(result.light.sunAlt, greaterThan(0));
     });
 
-    test('低太阳角时确实出现直射光斑（可见比例 > 0）', () {
+    test('正午光斑仍在观察墙上（45° 切角房核心承诺）', () {
+      // 90° 垂直布局正午 cos→0 光斑彻底消失；45° 切角房正午太阳与
+      // 窗/观察墙法线各成 45°（cos≈0.71），光斑应是全天最亮时刻之一。
+      const w = 240, h = 135;
+      final result = render(
+        baseRgb: syntheticWall(w, h),
+        width: w,
+        height: h,
+        spec: RenderSpec(
+          time: DateTime.parse('2025-12-21T12:00:00+08:00'),
+          lat: 39.9042,
+          lon: 116.4074,
+          windowAz: -1, // auto：窗=受光斜墙
+        ),
+      );
+      expect(result.albedoStats['visible_ratio'], greaterThan(0.02));
+    });
+    test('低太阳角晨光也能入室（auto 窗，光斑或落 back 墙但室内受光）', () {
       const w = 240, h = 135;
       final result = render(
         baseRgb: syntheticWall(w, h),
@@ -108,10 +125,12 @@ void main() {
           time: DateTime.parse('2025-12-21T08:30:00+08:00'),
           lat: 39.9042,
           lon: 116.4074,
-          windowAz: 90,
+          windowAz: -1,
         ),
       );
-      expect(result.albedoStats['visible_ratio'], greaterThan(0.02));
+      // 晨光几乎正对窗 → 光斑深入房间（back 墙/地板），观察墙可见比例
+      // 可以低；但直射必须存在（beam>0）且画面不是黑的。
+      expect(result.light.beamIrradiance, greaterThan(0.0));
     });
 
     test('高太阳角时墙上没有直射光斑（物理正确）', () {

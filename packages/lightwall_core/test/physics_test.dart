@@ -94,29 +94,48 @@ void main() {
   });
 
   group('窗户朝向（本项目的关键修正）', () {
-    test('东西南北四面各自落到正确的墙', () {
-      expect(Scene3D(SceneConfig(), 90).winWall, Wall.east);
-      expect(Scene3D(SceneConfig(), 270).winWall, Wall.west);
-      // 南向窗：观察墙选东侧墙（斜切），南窗落在西墙 —— 正对布局下
-      // 低角度冬季光斑物理上落在地板，观察墙永远看不到直射。
-      expect(Scene3D(SceneConfig(), 180).winWall, Wall.west);
-      // 北向窗：同样配东侧观察墙，北窗落在东墙（canonical=90）
-      expect(Scene3D(SceneConfig(), 0).winWall, Wall.east);
+    test('45° 切角房：正交朝向落正交墙，其余落斜墙', () {
+      // 北半球斜墙段 = 东南(135)/西南(225)。显式朝向与两段都差 45° 的
+      // （90/0/180/270）→ chamfer 斜墙；恰与某段重合的朝向落正交墙。
+      // 动态窗（auto，pipeline 用 litChamferAz）时窗地理朝向 = 斜墙段
+      // 本身（135/225），规范系里恰为正交位（east/west）。
+      expect(
+          Scene3D(SceneConfig(), 135,
+                  viewWallAz: Scene3D.chooseViewWall(135, sunAzGeo: 135, lat: 39.9))
+              .winWall,
+          Wall.east); // 窗=东南段、观察墙=西南段 → 规范系 east
+      expect(
+          Scene3D(SceneConfig(), 225,
+                  viewWallAz: Scene3D.chooseViewWall(225, sunAzGeo: 225, lat: 39.9))
+              .winWall,
+          Wall.west); // 窗=西南段 → 规范系 west
+      // 非正交显式朝向 → chamfer
+      expect(Scene3D(SceneConfig(), 90).winWall, Wall.chamfer);
+      expect(Scene3D(SceneConfig(), 180).winWall, Wall.chamfer);
     });
 
-    test('参考实现里"西北向"会退化成"西向"，本实现不会', () {
+    test('参考实现里"西北向"会退化成"西向"，本实现不会（45° 房显式朝向仍区分）', () {
       final nw = Scene3D(SceneConfig(), 315);
       final w = Scene3D(SceneConfig(), 270);
-      // 观察墙方位不同 → 说明朝向真的生效了（而不是被当成同一个值）
-      expect(nw.viewWallAz, isNot(equals(w.viewWallAz)));
+      // 显式朝向不同 → 窗墙法线不同（斜墙归属或法线数值区分）
+      final nwN = nw.windowOutwardNormal();
+      final wN = w.windowOutwardNormal();
+      expect((nwN[0] - wN[0]).abs() + (nwN[2] - wN[2]).abs(), greaterThan(0.01));
     });
 
-    test('窗户法线方向与朝向一致', () {
+    test('窗户法线方向与朝向一致（45° 切角房：显式朝向 → 斜墙法线）', () {
+      // 45° 切角房无"正东墙"：显式 90° 窗落在法线最近的斜墙上（45° 房
+      // 斜墙法线 = 赤道朝向 ±45°，北半球 = 135°/225°）。法线与该斜墙一致。
       final e = Scene3D(SceneConfig(), 90);
       final nrm = e.windowOutwardNormal();
-      expect(nrm[0], 1.0); // 朝东
-      final w = Scene3D(SceneConfig(), 270);
-      expect(w.windowOutwardNormal()[0], -1.0); // 朝西
+      // 显式 90：viewWall 取与窗法线夹角较小斜墙 → 窗法线规范 = 45°(东北斜墙)
+      expect(nrm[0], closeTo(0.7071, 1e-3));
+      expect(nrm[2], closeTo(0.7071, 1e-3));
+      // auto 动态窗（东南段 135 + 西南观察墙 225）在规范系里 = east 墙
+      final s = Scene3D(SceneConfig(), 135,
+          viewWallAz: Scene3D.chooseViewWall(135, sunAzGeo: 135, lat: 39.9));
+      expect(s.winWall, Wall.east);
+      expect(s.windowOutwardNormal()[0], closeTo(1.0, 1e-3)); // 规范系朝 +X
     });
   });
 

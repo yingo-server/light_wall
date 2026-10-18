@@ -26,6 +26,11 @@ enum Wall {
 
   /// 后墙：z = +roomD，外法线朝南（规范方位角 180°）—— 位于相机身后
   back,
+
+  /// 斜墙（45° 切角房）：一般平面，由 [Scene3D.chamferNormalAz]（法线
+  /// 规范方位角）与 [Scene3D.chamferPlaneD]（平面方程 n·p = d）定义。
+  /// 45° 切角房的窗与观察墙都落在斜墙上（见 chooseViewWall 文档）。
+  chamfer
 }
 
 /// 把方位角归一到 [0,360)。
@@ -236,7 +241,35 @@ class Scene3D {
       : windowAz = normAz(windowAz),
         viewWallAz = normAz(viewWallAz ?? chooseViewWall(windowAz)) {
     winWall = _wallForWindow(this.windowAz, this.viewWallAz);
+    // 斜墙（chamfer）的平面定义：法线 = 窗外法线（规范系），平面距离 =
+    // 房间外接半径（窗墙推到与正交墙同深，保证窗在房间轮廓内）。
+    if (winWall == Wall.chamfer) {
+      final az = windowNormalAzRoom * kDeg;
+      chamferNx = math.sin(az);
+      chamferNz = -math.cos(az);
+      // 平面位置：斜墙贴着正交墙线（过东墙/西墙的墙脚），保证"墙点沿
+      // toSun 的射线"在房间内就能到达窗平面（切角视觉：墙从正交位向
+      // 房内斜切）。
+      chamferD = cfg.roomW * 0.5 * chamferNx.abs() +
+          cfg.roomD * 0.05 * chamferNz.abs();
+    }
+    // 观察墙平面：45° 切角房里观察墙也是斜墙（背光段）。规范系里其内
+    // 法线恒 +Z？——不：规范系由 viewWallAz 定义，正交布局下内法线=+Z；
+    // 但切角布局里房间是"八边形切角"，观察墙斜置，相机对墙取正视角。
+    // 为保持相机/编码不变（相机看 -Z），把规范系旋转为"观察墙内法线
+    // 恒 = +Z"（toRoomAz 已保证），则观察墙平面在规范系里**仍是 z=0**。
+    // 斜墙体现在**窗墙**上（chamfer 已处理）。观察墙平面参数保持正交。
   }
+
+  /// 斜墙法线（规范系，单位向量）。仅 [Wall.chamfer] 时有效。
+  double chamferNx = 0, chamferNz = -1, chamferD = 0;
+
+  /// ── 观察墙平面参数（内法线视角）──
+  /// 正交布局：观察墙 z=0、内法线 +Z → viewN=(0,1)，viewD=0，
+  /// 切向量 u_axis=(1,0)（u=x）。45° 切角布局：观察墙是斜墙。
+  /// 统一平面方程：viewN·p = viewD（p=(x,z)）。
+  double viewNx = 0, viewNz = 1, viewD = 0;
+  double viewUx = 1, viewUz = 0; // 观察墙水平切向量（单位）
 
   final SceneConfig cfg;
 
@@ -421,7 +454,36 @@ class Scene3D {
           v1: v1,
           planeCoord: cfg.roomD,
         );
+      case Wall.chamfer:
+        // 斜墙：窗矩形按窗中心在斜墙平面上的局部 (u,v) 布置。
+        // u 原点 = 房间中心投影（与 windowVisibilityBatch 的 uOrigin 同口径）。
+        // 窗中心 u = 观察墙中心线上的代表墙点 (0, camH, 0) 沿"指向太阳"
+        // 方向与窗平面交点的 u —— 几何自洽（光斑自然对准窗）并自动贴角。
+        // 无太阳信息时回退 u=0（房间中心投影）。
+        final halfSpan = math.sqrt(cfg.roomW * cfg.roomW + cfg.roomD * cfg.roomD) * 0.5;
+        final cu = _chamferWindowU();
+        return WindowPlacement(
+          wall: Wall.chamfer,
+          u0: (cu - halfW).clamp(-halfSpan, halfSpan),
+          u1: (cu + halfW).clamp(-halfSpan, halfSpan),
+          v0: v0,
+          v1: v1,
+          planeCoord: chamferD,
+        );
     }
+  }
+
+  /// 斜墙窗中心的 u 坐标：观察墙中心代表点沿 toSun 与窗平面交点的 u。
+  /// 需要太阳方位 —— 由 pipeline 在构造后调用 [setChamferWindowU] 注入
+  /// （placement() 在窗可见性/环境光采样里被多次调用，须幂且一致）。
+  double _chamferUOverride = double.nan;
+
+  /// 注入斜墙窗中心 u（由 pipeline 按当前太阳方位算好）。
+  void setChamferWindowU(double u) => _chamferUOverride = u;
+
+  double _chamferWindowU() {
+    if (_chamferUOverride.isNaN) return 0.0;
+    return _chamferUOverride;
   }
 
   /// 玻璃净区（窗格矩形列表，按 (u0,u1,v0,v1) 连续四元组排列）。
@@ -603,8 +665,30 @@ class Scene3D {
 
     final pl = placement();
     final panes = _glassPanes(pl);
-    final eastWest = pl.wall == Wall.east || pl.wall == Wall.west;
-    final plane = pl.planeCoord;
+    // 统一一般平面求交：窗墙 = 平面 n·p = d（外法线 n 指向室外）。
+    // 正交墙是特例（n = ±X / +Z），chamfer 斜墙 n = (nx,0,nz)。
+    // 局部坐标 u：沿墙水平方向（= up × n），v = y。
+    final double nx, nz, nd;
+    final double ux, uz; // u 轴方向（单位）
+    switch (pl.wall) {
+      case Wall.east:
+        nx = 1; nz = 0; nd = pl.planeCoord; ux = 0; uz = 1;
+      case Wall.west:
+        nx = -1; nz = 0; nd = -pl.planeCoord; ux = 0; uz = -1;
+      case Wall.back:
+        nx = 0; nz = 1; nd = pl.planeCoord; ux = 1; uz = 0;
+      case Wall.chamfer:
+        nx = chamferNx; nz = chamferNz; nd = chamferD;
+        final len = math.sqrt(nx * nx + nz * nz);
+        ux = -nz / len; uz = nx / len; // up × n（右手）
+    }
+    // reveal 外平面：沿外法线再推墙厚
+    final ndOuter = nd + cfg.wallThicknessM;
+    // u 原点 = 房间中心 (0,·,roomD/2) 的 u 坐标（placement 同口径）
+    // u 原点 = 房间中心投影的 u 坐标。正交墙的 placement u 用绝对坐标
+    // （east/west 用 z、back 用 x），原点偏移应为 0；仅 chamfer 斜墙的
+    // placement u 以房间中心投影为原点（见 placement chamfer 分支）。
+    final uOrigin = pl.wall == Wall.chamfer ? (cfg.roomD * 0.5) * uz : 0.0;
     final uLo = math.min(pl.u0, pl.u1), uHi = math.max(pl.u0, pl.u1);
     final vLo = math.min(pl.v0, pl.v1), vHi = math.max(pl.v0, pl.v1);
     final rhoMargin =
@@ -612,46 +696,38 @@ class Scene3D {
 
     // 窗洞侧壁（reveal）：窗洞是穿过墙厚 d 的隧道。光线除在**内**墙面落在
     // 玻璃上，还必须穿出**外**墙面时仍落在窗洞开口内，否则被侧壁挡住。
-    final outwardSign = pl.wall == Wall.west ? -1.0 : 1.0;
-    final planeOuter = plane + outwardSign * cfg.wallThicknessM;
+    // （ndOuter 已在上文按一般平面定义；west 的负号已含在 nd = −planeCoord。）
 
     for (var i = 0; i < n; i++) {
       final o = i * 3;
       final px = pts[o], py = pts[o + 1], pz = pts[o + 2];
+      final pDotN = px * nx + pz * nz;
       // ── 中心方向的交点 (u_c, v_c) 与距离 t_c ──
-      final double tC, uc, vc;
-      if (eastWest) {
-        if (tx.abs() < 1e-12) continue;
-        tC = (plane - px) / tx;
-        if (tC <= 0) continue;
-        uc = pz + tC * tz;
-        vc = py + tC * ty;
-      } else {
-        if (tz.abs() < 1e-12) continue;
-        tC = (plane - pz) / tz;
-        if (tC <= 0) continue;
-        uc = px + tC * tx;
-        vc = py + tC * ty;
-      }
+      final denom = tx * nx + tz * nz;
+      if (denom.abs() < 1e-12) continue;
+      final tC = (nd - pDotN) / denom;
+      if (tC <= 0) continue;
+      final hx = px + tC * tx, hz = pz + tC * tz;
+      // u = (h − p0)·u 轴（p0 取原点在平面上的投影，u 以墙局部原点计：
+      // 直接用 h·u，配合 placement 里同口径的 cu 即可）
+      final uc = hx * ux + hz * uz - uOrigin;
+      final vc = py + tC * ty;
       // reveal（中心方向）：外墙侧落点必须在窗洞开口内
-      final tCo =
-          eastWest ? (planeOuter - px) / tx : (planeOuter - pz) / tz;
-      final uco = eastWest ? pz + tCo * tz : px + tCo * tx;
+      final tCo = (ndOuter - pDotN) / denom;
+      final uco = (px + tCo * tx) * ux + (pz + tCo * tz) * uz - uOrigin;
       final vco = py + tCo * ty;
       if (uco < uLo || uco > uHi || vco < vLo || vco > vHi) continue;
-      // ── 锥体足迹在 (u,v) 上的包围盒半宽（线性化后严格上界 + 二次残差余量）──
-      double duu, duv, dvu, dvv;
-      if (eastWest) {
-        duu = tC * (b1z - b1x * tz / tx);
-        duv = tC * (b2z - b2x * tz / tx);
-        dvu = tC * (b1y - b1x * ty / tx);
-        dvv = tC * (b2y - b2x * ty / tx);
-      } else {
-        duu = tC * (b1x - b1z * tx / tz);
-        duv = tC * (b2x - b2z * tx / tz);
-        dvu = tC * (b1y - b1z * ty / tz);
-        dvv = tC * (b2y - b2z * ty / tz);
-      }
+      // ── 锥体足迹在 (u,v) 上的包围盒半宽（线性化上界）──
+      // 一般平面：交点 h = p + t·l，t = (d − n·p)/(n·l)。Δl 引起
+      // Δh = Δl·t + l·Δt，其中 Δt = −(n·Δl)·t/(n·l)。u 分量：
+      // Δu = (Δh)·u_axis = t·[u_axis·Δl − (n·Δl)(u_axis·l)/(n·l)]
+      final invLn = 1.0 / denom;
+      final ulx = ux * tx + uz * tz; // u_axis · l（中心方向）
+      final double duu, duv, dvu, dvv;
+      duu = tC * (ux * b1x + uz * b1z - (b1x * nx + b1z * nz) * ulx * invLn);
+      duv = tC * (ux * b2x + uz * b2z - (b2x * nx + b2z * nz) * ulx * invLn);
+      dvu = tC * (b1y - (b1x * nx + b1z * nz) * ty * invLn);
+      dvv = tC * (b2y - (b2x * nx + b2z * nz) * ty * invLn);
       final hu = rhoMargin * math.sqrt(duu * duu + duv * duv);
       final hv = rhoMargin * math.sqrt(dvu * dvu + dvv * dvv);
 
@@ -696,32 +772,20 @@ class Scene3D {
         final lx = cosG[s] * tx + sg * (cp * b1x + sp * b2x);
         final ly = cosG[s] * ty + sg * (cp * b1y + sp * b2y);
         final lz = cosG[s] * tz + sg * (cp * b1z + sp * b2z);
-        double u, v;
-        var rayValid = false;
-        if (eastWest) {
-          if (lx.abs() < 1e-12) continue;
-          final t = (plane - px) / lx;
-          if (t <= 0) continue;
-          u = pz + t * lz;
-          v = py + t * ly;
-          rayValid = true;
-        } else {
-          if (lz.abs() < 1e-12) continue;
-          final t = (plane - pz) / lz;
-          if (t <= 0) continue;
-          u = px + t * lx;
-          v = py + t * ly;
-          rayValid = true;
-        }
-        if (!rayValid) continue;
+        final ldn = lx * nx + lz * nz;
+        if (ldn.abs() < 1e-12) continue;
+        final t = (nd - pDotN) / ldn;
+        if (t <= 0) continue;
+        final u = (px + t * lx) * ux + (pz + t * lz) * uz - uOrigin;
+        final v = py + t * ly;
         // 方向本身有效（与窗平面可求交）即计入分母；随后按落点是否在
         // 玻璃/窗洞内决定贡献。这样"被窗棂挡住"是物理遮挡（不贡献），
         // 而"射线方向不可求交"（数值退化）才不计入归一。
         wsum += wgt[s];
         if (_inPanes(panes, u, v)) {
           // reveal：外墙侧落点也必须在窗洞开口内
-          final to = eastWest ? (planeOuter - px) / lx : (planeOuter - pz) / lz;
-          final uo = eastWest ? pz + to * lz : px + to * lx;
+          final to = (ndOuter - pDotN) / ldn;
+          final uo = (px + to * lx) * ux + (pz + to * lz) * uz;
           final vo = py + to * ly;
           if (uo >= uLo && uo <= uHi && vo >= vLo && vo <= vHi) {
             acc += wgt[s];
@@ -731,7 +795,7 @@ class Scene3D {
             // 再散射进房间。被侧壁"挡住"的方向不是全黑——按隧道内路径长度
             // 给一个小的透光系数（越深越暗，指数衰减）。早期实现漏了这层，
             // 半影带因此比真实偏暗一档。
-            final depth = (planeOuter - plane).abs();
+            final depth = cfg.wallThicknessM;
             acc += wgt[s] * math.exp(-3.0 * depth / 0.30); // 归一到 0.30 m 墙厚
           }
         }
@@ -809,22 +873,67 @@ class Scene3D {
 
   static Wall _wallForWindow(double windowAz, double viewWallAz) {
     final canonical = normAz(windowAz + 180.0 - viewWallAz);
-    if (azDelta(canonical, 90.0) <= 45.0) return Wall.east;
-    if (azDelta(canonical, 270.0) <= 45.0) return Wall.west;
-    return Wall.back;
+    // 45° 切角房：窗法线规范方位不是 0/90/180/270 正交位 → 斜墙。
+    // 判定容差 1°（余量防浮点）；正交位仍走轴对齐墙（旧场景零变化）。
+    final dEast = azDelta(canonical, 90.0);
+    final dWest = azDelta(canonical, 270.0);
+    final dBack = azDelta(canonical, 180.0);
+    final dMin = [dEast, dWest, dBack].reduce(math.min);
+    if (dMin <= 1.0) {
+      if (dEast <= 1.0) return Wall.east;
+      if (dWest <= 1.0) return Wall.west;
+      return Wall.back;
+    }
+    return Wall.chamfer;
   }
 
-  /// 由窗户朝向选择观察墙（= 房间相对地理的旋转）。
+  /// 45° 切角房里**受光斜墙**的朝向（做窗墙用）：太阳方位偏东取东南段、
+  /// 偏西取西南段（北半球；南半球镜像）。[fallback]：太阳在地平线下
+  /// （夜/暮）时无受光概念，回退到赤道朝向。
+  static double litChamferAz(double sunAzGeo,
+      {double? lat, double sunAlt = 0.0, double fallback = 180.0}) {
+    final sgn = (lat != null && lat < 0) ? -1.0 : 1.0;
+    final eq = sgn > 0 ? 180.0 : 0.0;
+    final a1 = normAz(eq - 45.0 * sgn); // 东南段（北半球）
+    final a2 = normAz(eq + 45.0 * sgn); // 西南段（北半球）
+    // 夜/暮（太阳在地平线下）无"受光"概念，回退赤道朝向
+    if (sunAlt <= 0) return fallback;
+    final s = normAz(sunAzGeo);
+    final d1 = azDelta(a1, s);
+    final d2 = azDelta(a2, s);
+    return d1 <= d2 ? a1 : a2;
+  }
+
   ///
-  /// 让窗所在墙的外法线**精确等于** [windowAz]：取 viewWallAz = windowAz ± 90
-  /// （窗落在侧墙），观察墙即与该墙垂直的那面（斜切，全天有长条光斑扫过）。
+  /// 房间整体旋转、窗开口恒朝赤道（北半球朝南 180°、南半球朝北 0°），
+  /// 观察侧做成 **45° 切角**：两段斜墙分别朝东南(135°)/西南(225°)
+  /// （南半球镜像）。几何事实：正午太阳在赤道方向，两段斜墙与太阳的
+  /// 夹角都是 45°（cos=0.71，**光斑最亮**）——这修复了 90° 垂直布局
+  /// "正午 cos→0 光斑彻底消失"的问题；上午东南墙受光、下午西南墙
+  /// 受光，光斑在两段斜墙间交接而非退出画面。
   ///
-  /// 旧实现为"让光斑扫进画面"反解朝向（东西向配垂直墙、南北向一律 90），
-  /// 后果有两处：① 窗法线被量化到 3 面墙，176/360 个方位角算错入射余弦；
-  /// ② 在 45°/135°/225°/315° 处不连续（输入 135°→viewWall 225，
-  /// 136°→viewWall 90，1° 的输入跳 135° 构图）。本式对任意方位角连续且精确。
-  static double chooseViewWall(double windowAz) {
-    final w = normAz(windowAz);
-    return w < 180.0 ? normAz(w + 90.0) : normAz(w - 90.0);
+  /// [sunAzGeo]：太阳方位角（度）。按当前太阳取**受光的那段斜墙**
+  /// （夹角<90°者；两段都受光取夹角更小者）。[render] 每帧新建
+  /// Scene3D，故逐时刻动态取墙是零成本的。
+  ///
+  /// [windowAz] 显式指定时按窗法线对称取斜墙（windowAz±135 中向阳侧）。
+  static double chooseViewWall(double windowAz, {double? sunAzGeo, double? lat}) {
+    // 斜墙朝向（北半球：窗朝南 → 斜墙朝东南/西南；南半球镜像）
+    final sgn = (lat != null && lat < 0) ? -1.0 : 1.0;
+    final eq = sgn > 0 ? 180.0 : 0.0; // 窗开口朝向
+    final a1 = normAz(eq - 45.0 * sgn); // 东南（北半球）
+    final a2 = normAz(eq + 45.0 * sgn); // 西南（北半球）
+    if (sunAzGeo == null) {
+      // 无太阳信息：取与窗法线夹角较小的一段（构图稳定）
+      final w = normAz(windowAz);
+      return azDelta(a1, w) <= azDelta(a2, w) ? a1 : a2;
+    }
+    final s = normAz(sunAzGeo);
+    final d1 = azDelta(a1, s);
+    final d2 = azDelta(a2, s);
+    // 观察墙 = **背对太阳**的斜墙段（太阳照其室外侧，光穿窗投到墙面）。
+    if (d1 > 90.0 && d2 <= 90.0) return a1;
+    if (d2 > 90.0 && d1 <= 90.0) return a2;
+    return d1 >= d2 ? a1 : a2;
   }
 }

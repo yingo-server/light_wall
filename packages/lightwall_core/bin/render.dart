@@ -64,7 +64,6 @@ void main(List<String> argv) {
     h = outH;
   }
 
-  final windowAz = _windowAzFrom(args['window'] ?? 'right');
   double _req(String k, double dflt, String name) {
     final raw = args[k];
     if (raw == null) return dflt;
@@ -77,6 +76,15 @@ void main(List<String> argv) {
   }
   final lat = _req('lat', 39.9042, '纬度，北正');
   final lon = _req('lon', 116.4074, '经度，东正');
+  // 窗户朝向：显式指定优先；未指定（或 'auto'）时整个房间按纬度旋转，
+  // 窗开口恒朝赤道（北半球朝南 180°、南半球朝北 0°）—— 45° 切角房默认。
+  final windowRaw = args['window'];
+  // 默认 auto（-1）：45° 切角房，窗墙=受光斜墙（动态跟太阳，正午不消失），
+  // 观察墙=背光斜墙。显式朝向（--window e/s/…/度数）时窗墙固定为该法线的
+  // 斜墙近似，观察墙仍动态取背光段。
+  final windowAz = (windowRaw == null || windowRaw == 'auto')
+      ? -1.0
+      : _windowAzFrom(windowRaw);
   DateTime time;
   final timeRaw = args['time'];
   if (timeRaw != null) {

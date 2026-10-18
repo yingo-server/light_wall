@@ -11,6 +11,7 @@
 // 这样云/降水/雾霾相关的分支全部退化为常量，代码路径更短、更可预测。
 import 'dart:math' as math;
 import 'spectrum.dart';
+import 'tuning.dart';
 
 const double kDeg = math.pi / 180.0;
 
@@ -491,7 +492,10 @@ double nightSkyIrradiance(double moonAlt, double phase,
   if (moonAlt > 0) {
     moonAmb = moonIrradiance(moonAlt, phase) * 0.10;
   }
-  return natural * (1.0 + math.max(0.0, cityGlow)) + moonAmb;
+  // 【白名单 kCityGlowScale】输入缩放（默认 0.5）：城市辉光参数本意是
+  // "夜空相对自然底的倍增"，但直接作倍数时市区（2.0）会把夜空抬到
+  // "像开灯"——夜里整面墙变亮的主因。缩到不夸张区间，见 tuning.dart。
+  return natural * (1.0 + math.max(0.0, cityGlow) * kCityGlowScale) + moonAmb;
 }
 
 /// 散射天空（或暮光）的颜色：Rayleigh 散射光的光谱经 CIE 积分，最大分量

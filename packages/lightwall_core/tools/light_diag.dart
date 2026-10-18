@@ -134,7 +134,10 @@ void main(List<String> argv) {
     // 【注意】仅看窗户入射余弦是不够的：夏至早晨太阳在东偏北，
     // 东窗 cos 高达 0.90，但光从北侧来，照不到朝南的观察墙 ——
     // 这种情况下"无光斑"才是物理正确的。
-    final scene = Scene3D(SceneConfig(), c.window);
+    // 45° 切角房：与渲染同款动态选墙（观察墙=背光斜段）。
+    final scene = Scene3D(SceneConfig(), c.window,
+        viewWallAz: Scene3D.chooseViewWall(c.window,
+            sunAzGeo: res.light.sunAz, lat: kLat));
     // sunToRoomDir 返回的是"光射向房间"的**传播方向**；指向太阳取负。
     final toSunZ = -scene.sunToRoomDir(res.light.sunAz, res.light.sunAlt)[2];
     final reachesViewWall = toSunZ > 0.05;

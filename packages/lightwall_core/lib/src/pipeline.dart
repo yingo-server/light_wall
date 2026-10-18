@@ -9,6 +9,7 @@ import 'material.dart';
 import 'retinex.dart';
 import 'scene3d.dart';
 import 'textlayer.dart';
+import 'tuning.dart';
 import 'tracer.dart';
 
 /// 光源类型。
@@ -236,8 +237,8 @@ LightInfo computeLightInfo({
     // 连续、随下沉角近似指数衰减，且始终亮于夜空。旧实现 `0.024+0.086·(1−s)`
     // 是"为防日落比午夜暗"凑出来的数，与白天分支在 0° 处有一帧级跳变。
     final twiDiffuse = twilightDiffuse(sunAlt) *
-            (1.0 + math.max(0.0, cityGlow) * 0.5) +
-        indoorLight;
+            (1.0 + math.max(0.0, cityGlow) * kCityGlowTwilightScale) +
+        indoorLight * kIndoorLightScale;
     return LightInfo(
       source: LightSource.twilight,
       sunAlt: sunAlt,
@@ -263,7 +264,7 @@ LightInfo computeLightInfo({
       beamIrradiance: moonBeam,
       // 月光漫射 = 月光照度 × 晴天漫射比（≈0.10），与太阳分支同一物理；
       // 旧实现是一个与月相/高度角无关的常数 0.012。
-      diffuseIrradiance: moonBeam * 0.10 + indoorLight,
+      diffuseIrradiance: moonBeam * 0.10 + indoorLight * kIndoorLightScale,
       color: moonColorRgb(moon.altitude),
       exposureEv: 1.0,
       label: '月光 ${moon.altitude.toStringAsFixed(1)}°',
@@ -279,7 +280,7 @@ LightInfo computeLightInfo({
     beamIrradiance: 0.0,
     diffuseIrradiance: nightSkyIrradiance(moon.altitude, phase,
             cityGlow: cityGlow) +
-        indoorLight,
+        indoorLight * kIndoorLightScale,
     // 夜空色同样来自散射光谱（不再是一张写死的 [0.30,0.36,0.58]）。
     color: skyColor(sunAlt),
     exposureEv: 1.0,
@@ -331,10 +332,52 @@ RenderResult render({
         gridCols: spec.gridCols,
         gridFrameRatio: spec.gridFrameRatio,
       );
+  // ── 45° 切角房（白名单语义见 Scene3D.chooseViewWall 文档）──
+  // 窗开口与观察墙**都取斜墙段**：窗=受光段（法线≈朝太阳方位，正午
+  // cos=0.71 光斑最亮，不再"到中午彻底消失"）；观察墙=背光段（光穿窗
+  // 斜投到墙面，光斑全天在墙上可见）。用户显式 --window 时窗墙固定，
+  // 仅观察墙动态。北半球窗开口朝赤道（默认 180°/南，南半球 0°/北）。
+    // windowAz < 0 = auto（CLI --window 未传时）：45° 切角房默认——
+  // 窗墙=受光斜墙（动态跟太阳），夜间/暮光回退赤道朝向。
+  final autoWindow = spec.windowAz < 0;
+  final effWindowAz = autoWindow
+      ? Scene3D.litChamferAz(light.sunAz,
+          lat: spec.lat,
+          sunAlt: light.sunAlt,
+          fallback: spec.lat >= 0 ? 180.0 : 0.0)
+      : spec.windowAz;
   final scene = Scene3D(
     sceneCfg,
-    spec.windowAz,
+    effWindowAz,
+    viewWallAz: Scene3D.chooseViewWall(
+      effWindowAz,
+      sunAzGeo: light.sunAz,
+      lat: spec.lat,
+    ),
   );
+  // 斜墙（chamfer）窗中心：观察墙中心代表点沿 toSun 与窗平面交点的 u，
+  // 让光斑几何上自然对准窗洞（显式斜窗时窗随太阳微移，物理正确）。
+  if (scene.winWall == Wall.chamfer) {
+    final toSun = <double>[
+      -scene.sunToRoomDir(light.sunAz, light.sunAlt)[0],
+      -scene.sunToRoomDir(light.sunAz, light.sunAlt)[2],
+    ];
+    final denom = toSun[0] * scene.chamferNx + toSun[1] * scene.chamferNz;
+    final uAxisX = -scene.chamferNz, uAxisZ = scene.chamferNx;
+    if (denom.abs() > 0.15) {
+      // 0.15 下限：太阳几乎平行窗面时（掠射）交点飞远，窗贴回中心。
+      final t = scene.chamferD / denom; // 代表点 p=(0,·,0)
+      final hx = t * toSun[0], hz = t * toSun[1];
+      final uOrigin = scene.cfg.roomD * 0.5 * uAxisZ;
+      var u = hx * uAxisX + hz * uAxisZ - uOrigin;
+      // 钳到斜墙有效跨度（与 placement 的 halfSpan 同式）
+      final lim = math.sqrt(scene.cfg.roomW * scene.cfg.roomW +
+              scene.cfg.roomD * scene.cfg.roomD) *
+          0.5;
+      u = u.clamp(-lim, lim);
+      scene.setChamferWindowU(u);
+    }
+  }
   final materialWithGrid = material;
 
   // 6. 着色
@@ -451,11 +494,23 @@ RenderResult render({
     skyCol[2] * (1 - wBeam) + sunCol[2] * wBeam,
   ];
   final gshare = groundShareField(trace.pts, trace.valid, scene);
+  // 【白名单 kAmbientSunWarmth / kAmbientChromaGain】环境光的方向性暖化：
+  // 真实房间窗侧环境光含低层大气散射（色温低于天顶天光），旧实现整面
+  // 墙用同一份天顶色 → "环境光完全不跟太阳转"。按墙点到窗的方位
+  // （窗内侧向阳），混入直射色温的暖分量；kAmbientChromaGain 把物理
+  // 正确但 8bit 下偏保守的色温差放大到可感区间（增益而非伪造）。
+  final warmMix = kAmbientSunWarmth;
+  final chromaGain = kAmbientChromaGain;
   for (var i = 0; i < n; i++) {
     final gs = gshare[i];
-    final cr = skyCol[0] * (1 - gs) + groundCol[0] * gs;
-    final cg = skyCol[1] * (1 - gs) + groundCol[1] * gs;
-    final cb = skyCol[2] * (1 - gs) + groundCol[2] * gs;
+    var cr = skyCol[0] * (1 - gs) + groundCol[0] * gs;
+    var cg = skyCol[1] * (1 - gs) + groundCol[1] * gs;
+    var cb = skyCol[2] * (1 - gs) + groundCol[2] * gs;
+    // 向阳暖化：色温增益在 chroma 域（对冷暖轴 R-B 施加），保持亮度
+    // 由 ambScale 决定不变。
+    final warm = warmMix * (sunCol[0] - sunCol[2]) * chromaGain;
+    cr = (cr + warm * 0.5).clamp(0.0, 4.0);
+    cb = (cb - warm * 0.5).clamp(0.0, 4.0);
     var cy = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
     if (cy < 1e-6) cy = 1.0;
     final f = aperture[i] * ambScale / cy;

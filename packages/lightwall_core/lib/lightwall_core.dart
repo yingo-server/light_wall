@@ -11,6 +11,7 @@ export 'src/pipeline.dart';
 export 'src/retinex.dart';
 export 'src/scene3d.dart';
 export 'src/sky.dart';
+export 'src/tuning.dart';
 export 'src/spectrum.dart';
 export 'src/textlayer.dart';
 export 'src/tracer.dart';
