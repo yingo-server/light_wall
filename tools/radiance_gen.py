@@ -135,8 +135,9 @@ def render_one(sky_bytes, octree, out_png, w, h, cam, exposure=0.0, nproc=8):
         "-vu", "0", "0", "1",
         "-vh", "88", "-vv", "52",
     ]
+    # 注意：该构建的 rpict 不接受 -n（并行）——并行改由外部多进程/分块完成
     params = ["-ab", "4", "-ad", "2048", "-as", "512", "-ar", "128",
-              "-aa", "0.08", "-lr", "6", "-lw", "0.002", "-n", str(nproc)]
+              "-aa", "0.08", "-lr", "6", "-lw", "0.002"]
     hdr = pr.rpict(view, octree, xres=w, yres=h, params=params)
     hdr = pr.pfilt(hdr, xres=str(w), yres=str(h), exposure=exposure)
     tiff = pr.ra_tiff(hdr, out=out_png.replace(".png", ".tif"), lzw=True)
