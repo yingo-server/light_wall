@@ -7,6 +7,7 @@ import 'atmosphere.dart';
 import 'compose.dart';
 import 'material.dart';
 import 'retinex.dart';
+import 'spectral.dart';
 import 'scene3d.dart';
 import 'textlayer.dart';
 import 'tuning.dart';
@@ -28,6 +29,8 @@ class LightInfo {
     required this.color,
     required this.exposureEv,
     required this.label,
+    this.beamSpectrum,
+    this.ambientSpectrum,
   });
 
   final LightSource source;
@@ -38,6 +41,13 @@ class LightInfo {
   final double beamIrradiance;
   final double diffuseIrradiance;
   final List<double> color;
+
+  /// 直射光的 7 波段光谱（归一化亮度=1；null = 旧 RGB 路径）。
+  /// 物理：色温由大气逐波段吸收决定，不指定颜色。
+  final Float64List? beamSpectrum;
+
+  /// 环境光（天光漫射）的 7 波段光谱。null = 旧 RGB 路径。
+  final Float64List? ambientSpectrum;
 
   /// 实际施加的曝光倍率。构造时为占位 1.0，由 [render] 的测光结果写回
   /// （这样"上报的 EV"与"实际施加的 EV"始终一致）。
@@ -214,11 +224,19 @@ LightInfo computeLightInfo({
     final diffuse =
         skyIrradiance(sunAlt) * (1.0 + 1.2 * c);
     final color = sunColorFromAltitude(sunAlt);
+    // 七波段光谱（逐波段大气透过；云按中性衰减后逐波段乘）
+    final beamSpec0 = sunSpectrumBands(sunAlt, aod550: aod550FromVisibility(vis));
+    final beamSpec = Float64List(kSpectralN);
+    for (var i = 0; i < kSpectralN; i++) {
+      beamSpec[i] = beamSpec0[i] * cloudBeamT;
+    }
     // exposureEv 不再在这里估：真实曝光由画面测光（sceneExposureEv）在
     // render() 内算出并写回（旧实现把入射照度的幂律当曝光，且它与实际
     // 施加的 EV 不是同一个值 —— PI-4 的真 bug）。
     return LightInfo(
       source: LightSource.sun,
+      beamSpectrum: beamSpec,
+      ambientSpectrum: skySpectrumBands(sunAlt, aod550: aod550FromVisibility(vis)),
       sunAlt: sunAlt,
       sunAz: toSunAz,
       moonAlt: moon.altitude,
@@ -387,6 +405,7 @@ RenderResult render({
     sunAzGeo: light.sunAz,
     sunAlt: light.source == LightSource.moon ? light.moonAlt : light.sunAlt,
     sunColor: light.color,
+    sunSpectrum: light.beamSpectrum,
     beamIrradiance: light.beamIrradiance,
     // 【真 bug】漫射此前传 0：TraceInput.diffuseIrradiance 乘进
     // ambientScale，而 tracer 里**有效像素完全不用 ambientScale**
@@ -478,15 +497,36 @@ RenderResult render({
   // 地面反射）偏暖（sunColor）。旧实现整面墙乘一个与位置无关的常数色，
   // 等价于假设整个窗同色。
   final skyCol = ambColor;
-  // 室外地面所见之色 = **照到地面的光**的颜色（直射×投影 + 漫射）× 中性反照率。
-  // 关键：夜间/暮光无直射时，地面只受月光/天光照射 → 冷灰蓝；
-  // 旧实现写死 `sunColorFromAltitude(max(alt,0))`，夜里等于取了"地平线上的
-  // 落日色"（深橙红），于是整面墙被刷上一层红条。
+  // ── 七波段环境光（光谱域混合与材质吸收）──
+  // ambSpecBands：天光波段（有光谱时）；groundSpecBands：地面所见光的
+  // 波段 = 直射×地面反照率谱 + 天光×地面反照率谱（中性反照率仅标量缩放，
+  // 这里归一形状）。混合权重 wBeam 与 RGB 路径一致。
+  final specM = rgbToBandMatrix();
+  final specInt = bandToRgbWeights();
+  final ambSpecBands = light.ambientSpectrum;
+  // 室外地面所见之色/谱 = 照到地面的光（直射×投影 + 漫射）× 中性反照率
   final beamProj = light.beamIrradiance *
       math.max(math.sin(math.max(altForLight, 0.0) * kDeg), 0.0);
   final diffIrr = light.diffuseIrradiance;
   final wBeam =
       (beamProj + diffIrr) > 1e-12 ? beamProj / (beamProj + diffIrr) : 0.0;
+  Float64List? groundSpecBands;
+  if (ambSpecBands != null) {
+    final gAlbSpec = Float64List(kSpectralN);
+    const gAlbedo = kGroundAlbedoDry;
+    final sunSpec = light.beamSpectrum;
+    for (var bI = 0; bI < kSpectralN; bI++) {
+      // 地面反射 = 直射分量 × 地面反照率 + 天光分量 × 地面反照率
+      final sunE = sunSpec != null ? sunSpec[bI] : 1.0;
+      gAlbSpec[bI] =
+          (sunE * wBeam + ambSpecBands[bI] * (1 - wBeam)) * gAlbedo;
+    }
+    groundSpecBands = gAlbSpec;
+  }
+  // 室外地面所见之色 = **照到地面的光**的颜色（直射×投影 + 漫射）× 中性反照率。
+  // 关键：夜间/暮光无直射时，地面只受月光/天光照射 → 冷灰蓝；
+  // 旧实现写死 `sunColorFromAltitude(max(alt,0))`，夜里等于取了"地平线上的
+  // 落日色"（深橙红），于是整面墙被刷上一层红条。
   final sunCol = sunColorFromAltitude(math.max(altForLight, 0.0));
   final groundCol = <double>[
     skyCol[0] * (1 - wBeam) + sunCol[0] * wBeam,
@@ -499,24 +539,65 @@ RenderResult render({
   // 墙用同一份天顶色 → "环境光完全不跟太阳转"。按墙点到窗的方位
   // （窗内侧向阳），混入直射色温的暖分量；kAmbientChromaGain 把物理
   // 正确但 8bit 下偏保守的色温差放大到可感区间（增益而非伪造）。
-  final warmMix = kAmbientSunWarmth;
-  final chromaGain = kAmbientChromaGain;
+  // 【白名单暖化的波段版】向阳暖化在光谱域表达：观察墙的入射环境光 =
+  // 天光成分 × (1−warm) + 直射光谱成分 × warm（窗侧方向性混合）——
+  // 这不是给 RGB 加暖色，而是"窗侧看到的天空里有更多直射散射成分"的
+  // 波段级替换。kAmbientChromaGain 仍作为混合权重的增益。
+  final warmMix = kAmbientSunWarmth * kAmbientChromaGain;
+  Float64List? warmAmbSpec;
+  if (ambSpecBands != null && light.beamSpectrum != null) {
+    warmAmbSpec = Float64List(kSpectralN);
+    for (var bI = 0; bI < kSpectralN; bI++) {
+      warmAmbSpec[bI] = ambSpecBands[bI] * (1 - warmMix.clamp(0.0, 0.9)) +
+          light.beamSpectrum![bI] * warmMix.clamp(0.0, 0.9);
+    }
+  }
+  final useSpec = warmAmbSpec != null && groundSpecBands != null;
   for (var i = 0; i < n; i++) {
     final gs = gshare[i];
-    var cr = skyCol[0] * (1 - gs) + groundCol[0] * gs;
-    var cg = skyCol[1] * (1 - gs) + groundCol[1] * gs;
-    var cb = skyCol[2] * (1 - gs) + groundCol[2] * gs;
-    // 向阳暖化：色温增益在 chroma 域（对冷暖轴 R-B 施加），保持亮度
-    // 由 ambScale 决定不变。
-    final warm = warmMix * (sunCol[0] - sunCol[2]) * chromaGain;
-    cr = (cr + warm * 0.5).clamp(0.0, 4.0);
-    cb = (cb - warm * 0.5).clamp(0.0, 4.0);
-    var cy = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
-    if (cy < 1e-6) cy = 1.0;
-    final f = aperture[i] * ambScale / cy;
-    ambientRgb[i * 3] = material.albedo[i * 3] * cr * f;
-    ambientRgb[i * 3 + 1] = material.albedo[i * 3 + 1] * cg * f;
-    ambientRgb[i * 3 + 2] = material.albedo[i * 3 + 2] * cb * f;
+    if (useSpec) {
+      // ── 七波段环境光：入射谱(天光/地面按 gshare 混合) × 材质反射谱 → RGB ──
+      final aR = material.albedo[i * 3],
+          aG = material.albedo[i * 3 + 1],
+          aB = material.albedo[i * 3 + 2];
+      var sr = 0.0, sg = 0.0, sb = 0.0;
+      for (var bI = 0; bI < kSpectralN; bI++) {
+        final inc = warmAmbSpec[bI] * (1 - gs) + groundSpecBands[bI] * gs;
+        final alb = aR * specM[bI][0] + aG * specM[bI][1] + aB * specM[bI][2];
+        final e = inc * alb;
+        sr += e * specInt[bI][0];
+        sg += e * specInt[bI][1];
+        sb += e * specInt[bI][2];
+      }
+      // 亮度归一由 ambScale 承担（旧路径 cy 归一）：这里把 RGB 按其亮度
+      // 归一，保持与 ambScale 的量纲契约。
+      final ry = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+      if (ry < 1e-9) {
+        ambientRgb[i * 3] = 0;
+        ambientRgb[i * 3 + 1] = 0;
+        ambientRgb[i * 3 + 2] = 0;
+        continue;
+      }
+      final f = aperture[i] * ambScale;
+      ambientRgb[i * 3] = sr / ry * f;
+      ambientRgb[i * 3 + 1] = sg / ry * f;
+      ambientRgb[i * 3 + 2] = sb / ry * f;
+    } else {
+      // ── 旧 RGB 路径（月光/夜间无光谱时兜底）──
+      final gs2 = gshare[i];
+      var cr = skyCol[0] * (1 - gs2) + groundCol[0] * gs2;
+      var cg = skyCol[1] * (1 - gs2) + groundCol[1] * gs2;
+      var cb = skyCol[2] * (1 - gs2) + groundCol[2] * gs2;
+      final warm = warmMix * (sunCol[0] - sunCol[2]);
+      cr = (cr + warm * 0.5).clamp(0.0, 4.0);
+      cb = (cb - warm * 0.5).clamp(0.0, 4.0);
+      var cy = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
+      if (cy < 1e-6) cy = 1.0;
+      final f = aperture[i] * ambScale / cy;
+      ambientRgb[i * 3] = material.albedo[i * 3] * cr * f;
+      ambientRgb[i * 3 + 1] = material.albedo[i * 3 + 1] * cg * f;
+      ambientRgb[i * 3 + 2] = material.albedo[i * 3 + 2] * cb * f;
+    }
   }
 
   // 7.5 曝光适应：对**全部辐射统一施加**（相机测光 / 人眼适应的真实行为）

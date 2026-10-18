@@ -10,6 +10,9 @@
 // 本项目**禁用天气系统**：只有晴天一种状态，故云量恒为 0、能见度取 20km。
 // 这样云/降水/雾霾相关的分支全部退化为常量，代码路径更短、更可预测。
 import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'spectral.dart';
 import 'spectrum.dart';
 import 'tuning.dart';
 
@@ -422,6 +425,73 @@ List<double> sunColorFromAltitude(double altDeg) {
     math.max(0.0, s.rgb[2] / s.luminance),
   ];
 }
+
+/// 太阳直射的 **7 波段光谱**（亮度归一 1）。
+///
+/// 物理：普朗克 5772 K 发射谱 × 大气逐波段透过率 T(λ)（Rayleigh τ∝λ⁻⁴、
+/// 臭氧 Chappuis、气溶胶 Ångström），在 7 个波段中心计算 T 后归一亮度。
+/// 这是"色温"的正确来源：低高度角时短波被清、长波存活 —— 不指定颜色。
+Float64List sunSpectrumBands(double altDeg, {double aod550 = 0.05}) {
+  final out = Float64List(kSpectralN);
+  if (altDeg < 0) {
+    for (var i = 0; i < kSpectralN; i++) {
+      out[i] = 1.0;
+    }
+    return out;
+  }
+  final am = airMassKastenYoung(altDeg);
+  var lum = 0.0;
+  for (var i = 0; i < kSpectralN; i++) {
+    final l = kSpectralBandNm[i];
+    // 波段内能量 = 中心透过率 × 波段宽（高斯 σ22 的等效宽度因子并入归一）
+    final e = planckRel(l) * atmosphericTransmittance(l, am, aod550: aod550);
+    out[i] = e;
+    lum += e * _bandLumWeight(i);
+  }
+  if (lum <= 1e-12) {
+    for (var i = 0; i < kSpectralN; i++) {
+      out[i] = 1.0;
+    }
+    return out;
+  }
+  for (var i = 0; i < kSpectralN; i++) {
+    out[i] /= lum;
+  }
+  return out;
+}
+
+/// 天空漫射（Rayleigh 散射）的 7 波段光谱（max 归一 1）。
+///
+/// 物理：入射太阳光谱 × T(λ) × 散射相函数 Rayleigh τ(λ)（散射效率
+/// ∝λ⁻⁴ → 短波散射强 → 天空蓝）。低太阳高度角时光程长、短波在直射
+/// 中被清掉，散射谱随之转暖 —— 暮光的"天光转暖"由此而来。
+Float64List skySpectrumBands(double sunAltDeg, {double aod550 = 0.05}) {
+  final out = Float64List(kSpectralN);
+  final a = sunAltDeg < -8.0 ? -8.0 : (sunAltDeg > 90.0 ? 90.0 : sunAltDeg);
+  final am = math.min(airMassKastenYoung(a), 6.0);
+  var mx = 0.0;
+  for (var i = 0; i < kSpectralN; i++) {
+    final l = kSpectralBandNm[i];
+    final e = planckRel(l) *
+        atmosphericTransmittance(l, am, aod550: aod550) *
+        rayleighTau(l);
+    out[i] = e;
+    if (e > mx) mx = e;
+  }
+  if (mx <= 1e-12) {
+    for (var i = 0; i < kSpectralN; i++) {
+      out[i] = 1.0;
+    }
+    return out;
+  }
+  for (var i = 0; i < kSpectralN; i++) {
+    out[i] /= mx;
+  }
+  return out;
+}
+
+/// 波段的亮度权重（CIE Y 在波段中心的值，积分用）。
+double _bandLumWeight(int band) => cieY(kSpectralBandNm[band]);
 
 /// 天光（天空漫射）水平照度，晴天。量纲：天顶直射法向照度 = 1。
 ///

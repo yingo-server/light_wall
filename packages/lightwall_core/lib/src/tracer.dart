@@ -15,6 +15,7 @@ import 'astro.dart';
 import 'atmosphere.dart';
 import 'material.dart';
 import 'scene3d.dart';
+import 'spectral.dart';
 
 /// 介质界面的**法向**反射率 F0（Schlick 基）：F0 = ((n−1)/(n+1))²。
 ///
@@ -53,6 +54,7 @@ class TraceInput {
     this.aod550 = 0.05,
     this.isMoon = false,
     this.wetGround = false,
+    this.sunSpectrum,
   });
 
   final Scene3D scene;
@@ -63,6 +65,10 @@ class TraceInput {
   final double beamIrradiance;
   final double diffuseIrradiance;
   final List<double> ambientColor;
+
+  /// 直射 7 波段光谱（亮度归一）。非 null 时直射着色走波段域：
+  /// 材质逐波段吸收 → 乘积 → 积分 RGB（色温与材质显色都是算出来的）。
+  final Float64List? sunSpectrum;
 
   /// 【旧口径，只为向后兼容】半影采样半径 / 窗宽（无量纲）。
   ///
@@ -172,6 +178,10 @@ TraceOutput traceScene(TraceInput input) {
   final isWater = mat.isWater;
 
   final out = Float32List(n * 3);
+  // 七波段直射着色的预计算：权重矩阵（RGB→波段）与积分权重（波段→RGB）
+  final specM = rgbToBandMatrix(); // [band][ch]
+  final specInt = bandToRgbWeights(); // [band][3]
+  final sunSpec = input.sunSpectrum;
   final sunR = input.sunColor[0] * gTintR,
       sunG = input.sunColor[1] * gTintG,
       sunB = input.sunColor[2] * gTintB;
@@ -239,9 +249,28 @@ TraceOutput traceScene(TraceInput input) {
       // 破坏了能量守恒；掠射（F→1）时最明显。
       final fres = _fresnelSchlick(ndv, _kF0);
       final kd = ndlV * beamScaleAll * (1.0 - fres);
-      r = aR2 * sunR * kd;
-      g = aG2 * sunG * kd;
-      b = aB2 * sunB * kd;
+      if (sunSpec != null) {
+        // ── 七波段路径：材质反射谱(逐波段) × 太阳光谱(逐波段) → RGB ──
+        // 材质光谱由 albedo RGB 经权重矩阵投影（平滑先验），吸收在波段
+        // 域完成 —— 墙面"泛黄/泛冷"是算出来的吸收，不是指定颜色。
+        var sr = 0.0, sg = 0.0, sb = 0.0;
+        for (var bI = 0; bI < kSpectralN; bI++) {
+          final alb =
+              aR2 * specM[bI][0] + aG2 * specM[bI][1] + aB2 * specM[bI][2];
+          final e = alb * sunSpec[bI];
+          sr += e * specInt[bI][0];
+          sg += e * specInt[bI][1];
+          sb += e * specInt[bI][2];
+        }
+        // 玻璃色调（铁吸收）同样波段化后并入
+        r = sr * kd;
+        g = sg * kd;
+        b = sb * kd;
+      } else {
+        r = aR2 * sunR * kd;
+        g = aG2 * sunG * kd;
+        b = aB2 * sunB * kd;
+      }
 
       // 镜面（Cook-Torrance GGX + Smith + Schlick）
       var hx = vx + toSun[0];
@@ -361,3 +390,5 @@ double _cookTorrance(double ndl, double ndv, double ndh, double roughness) {
   final sheen = 0.25 * math.pow(1.0 - ndv, 5).toDouble() * (1.0 - _kF0);
   return (brdf + sheen).clamp(0.0, 20.0);
 }
+
+
