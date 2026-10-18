@@ -74,15 +74,54 @@ jobs:
           dart run tools/light_diag.dart
       - name: AOT 编译
         working-directory: packages/lightwall_core
-        run: dart compile exe bin/render.dart -o "${{ github.workspace }}/${{ matrix.out }}"
+        run: |
+          dart compile exe bin/render.dart -o "${{ github.workspace }}/${{ matrix.out }}"
+          # Linux 额外产出 TUI 向导（交互询问参数，回车取默认/网络默认）
+          if [[ "${{ matrix.out }}" == lightwall_render-linux-* ]]; then
+            dart compile exe bin/tui.dart -o "${{ github.workspace }}/lightwall_tui-${{ matrix.name }}"
+          fi
       - name: 冒烟
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_tests == 'true'
         working-directory: packages/lightwall_core
         run: dart run bin/render.dart --bg ../../app/assets/backgrounds/microcement.png --time 2025-12-21T08:30:00+08:00 --lat 39.9042 --lon 116.4074 --window east --width 480 --height 270 --out "${{ github.workspace }}/cli_smoke.png"
+      - name: Termux 特别打包（Android；仅 linux-arm64 / linux-x64）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          ARCH="${{ matrix.name == 'linux-arm64' && 'aarch64' || 'x86_64' }}"
+          PKG="lightwall-termux-${ARCH}"
+          mkdir -p "$PKG"
+          cp "${{ github.workspace }}/${{ matrix.out }}" "$PKG/lightwall_render"
+          cp "${{ github.workspace }}/lightwall_tui-${{ matrix.name }}" "$PKG/lightwall_tui"
+          cat > "$PKG/README.txt" <<'EOF'
+          LightWall CLI + TUI（Termux / Android aarch64）
+
+          安装（Termux 内）：
+            tar xzf lightwall-termux-aarch64.tar.gz
+            chmod +x lightwall_render lightwall_tui
+            ./lightwall_tui          # 交互向导：回车取默认（北京/当前时间）
+            ./lightwall_render --bg wall.png --time 2025-12-21T08:30:00+08:00 ...
+
+          说明：
+            · 纯 Dart AOT，无需 root，Termux 直接运行
+            · 底图 PNG 放同目录，TUI 向导会逐项询问参数
+          EOF
+          tar czf "${PKG}.tar.gz" "$PKG"
+          sha256sum "${PKG}.tar.gz" >> "${{ github.workspace }}/SHA256-termux.txt"
+          echo "打包: ${PKG}.tar.gz ($(du -h ${PKG}.tar.gz | cut -f1))"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.out }}
           path: ${{ matrix.out }}
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: lightwall-termux-${{ matrix.name == 'linux-arm64' && 'aarch64' || 'x86_64' }}
+          path: |
+            lightwall-termux-*.tar.gz
+            SHA256-termux.txt
           retention-days: 90
 
   # ── 桌面版：Flutter Windows ─────────────────────────────────────
@@ -145,7 +184,7 @@ jobs:
       - name: 列产物
         run: ls -la
       - name: 生成校验和
-        run: sha256sum lightwall_render-* LightWall-windows-*.zip 2>/dev/null > SHA256SUMS.txt || true
+        run: sha256sum lightwall_render-* lightwall_tui-* lightwall-termux-*.tar.gz LightWall-windows-*.zip 2>/dev/null > SHA256SUMS.txt || true
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
@@ -158,6 +197,8 @@ jobs:
           body_path: release_notes.md
           files: |
             lightwall_render-*
+            lightwall_tui-*
+            lightwall-termux-*.tar.gz
             LightWall-windows-*.zip
             SHA256SUMS.txt
             lightwall_day*.mp4
