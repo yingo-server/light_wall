@@ -89,11 +89,33 @@ glazing polygon win
 """
 
 
+def _oconv_debug(text: bytes, out: str, tmpdir: str):
+    """直接调用 oconv 并保留 stderr（pyradiance 的封装会吞掉报错）。"""
+    import subprocess
+    from pyradiance.anci import BINPATH
+    rad = os.path.join(tmpdir, "scene.rad")
+    with open(rad, "wb") as f:
+        f.write(text)
+    r = subprocess.run([str(BINPATH / "oconv"), "-w", rad],
+                       capture_output=True)
+    if r.returncode != 0:
+        print("── oconv 失败 ──", flush=True)
+        print("stderr:", r.stderr.decode(errors="replace")[:2000], flush=True)
+        # 打印场景文本尾部（定位语法错误）
+        txt = text.decode(errors="replace").splitlines()
+        print("场景共", len(txt), "行；前 12 行：", flush=True)
+        for line in txt[:12]:
+            print("  |", line, flush=True)
+    with open(out, "wb") as f:
+        f.write(r.stdout)
+    return r.returncode == 0
+
+
 def build_scene(sky_bytes, room_txt, win_txt, tmpdir):
     """编译场景：天空 + 房间 → 八叉树，再用 mkillum 把窗面转成二次光源。"""
     base = os.path.join(tmpdir, "base.oct")
-    with open(base, "wb") as f:
-        f.write(pr.oconv(stdin=(sky_bytes + room_txt.encode()), warning=False))
+    if not _oconv_debug(sky_bytes + room_txt.encode(), base, tmpdir):
+        raise RuntimeError("oconv 失败（见上方 stderr）")
     # mkillum：输入窗面，输出 illum 定义（标准窗户采光流程）
     illum = pr.mkillum(inp=win_txt.encode(), octree=base, nproc=4)
     final = os.path.join(tmpdir, "scene.oct")
