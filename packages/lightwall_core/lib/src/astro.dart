@@ -616,6 +616,56 @@ List<double> moonColorRgb(double moonAlt) {
   return sunColorFromAltitude(moonAlt);
 }
 
+/// 月光的 **7 波段光谱**（亮度归一 1）。
+///
+/// 物理链（逐波段）：
+///   太阳发射谱 × T(大气，月光光程) × **月面反射谱** × T(大气，月光入室光程)
+/// 月面反射谱：月壤（Apollo 采样实验室谱）在可见光段**微偏红**——
+/// 400/700 nm 反射率比约 0.75/1.0（铁钛氧化物吸收蓝紫）。归一形状。
+///
+/// 观察者效应（银白感的真正来源）：月光照度 0.1~0.3 lux 处于人眼
+/// **中间视觉**下段，视杆细胞（峰值 507 nm）权重上升 —— **珀金杰位移**
+/// 使光谱感知整体向蓝偏。这属于观察者模型不属于光源，用白名单常数
+/// 银白感的观察者效应（降饱和）在合成端处理（见 tuning.dart 的
+/// [kMoonPurkinjeShift] 文档），光源谱保持物理。
+Float64List moonSpectrumBands(double moonAlt, {double aod550 = 0.05}) {
+  final out = Float64List(kSpectralN);
+  if (moonAlt <= 0) {
+    for (var i = 0; i < kSpectralN; i++) {
+      out[i] = 1.0;
+    }
+    return out;
+  }
+  final am = airMassKastenYoung(moonAlt);
+  // 月面反射谱（相对形状）：400/450/500/550/600/650/700 nm
+  // Apollo 实验室谱的波段采样（红端归一 1）
+  const lunarReflect = [0.75, 0.82, 0.88, 0.93, 0.97, 0.99, 1.00];
+  var lum = 0.0;
+  for (var i = 0; i < kSpectralN; i++) {
+    final l = kSpectralBandNm[i];
+    // 月光传播 = 太阳光穿过大气到月面再反射回进入大气（单程大气近似：
+    // 月-地距离上无衰减，进出大气各乘一次 T —— 取 sqrt(T) 等效单程）。
+    final t = math.sqrt(atmosphericTransmittance(l, am, aod550: aod550));
+    // 月面谱保持物理（微红）。珀金杰位移不改光源谱——它是观察者效应，
+    // 在合成端对月光场景降饱和（见 kMoonPurkinjeShift 与 synthesize 的
+    // moonDesaturate 通道）。这里只按明视觉亮度归一。
+    final e = planckRel(l) * t * lunarReflect[i];
+    out[i] = e * cieY(l);
+    lum += out[i];
+  }
+  if (lum <= 1e-12) {
+    for (var i = 0; i < kSpectralN; i++) {
+      out[i] = 1.0;
+    }
+    return out;
+  }
+  for (var i = 0; i < kSpectralN; i++) {
+    out[i] /= lum;
+  }
+  return out;
+}
+
+
 /// 太阳有效角半径（度）—— [sunAngularDiameterDeg] 的一半，供几何层使用。
 double sunAngularRadiusDeg(double altDeg) => sunAngularDiameterDeg(altDeg) * 0.5;
 

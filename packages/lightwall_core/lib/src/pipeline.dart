@@ -284,6 +284,8 @@ LightInfo computeLightInfo({
       // 旧实现是一个与月相/高度角无关的常数 0.012。
       diffuseIrradiance: moonBeam * 0.10 + indoorLight * kIndoorLightScale,
       color: moonColorRgb(moon.altitude),
+      // 月光七波段：月面反射谱 × 大气 × 珀金杰位移（银白感，白名单）
+      beamSpectrum: moonSpectrumBands(moon.altitude),
       exposureEv: 1.0,
       label: '月光 ${moon.altitude.toStringAsFixed(1)}°',
     );
@@ -657,12 +659,20 @@ RenderResult render({
     direct[i] = trace.rgb[i] * ev;
     ambientRgb[i] = ambientRgb[i] * ev;
   }
+  // 【观察者模型：月光场景降饱和】月光 0.1~0.3 lux 处于中间视觉下段，
+  // 视杆细胞主导（无色彩分辨），场景色彩感知大幅褪色 —— "银白月夜"
+  // 的生理学来源。月面反射谱本身微偏红（物理，保留在光谱域），银白感
+  // 在此以饱和度降低表达。kMoonPurkinjeShift = 保留的色度比例。
+  final lookMoon = light.source == LightSource.moon
+      ? spec.look.copyWith(
+          saturation: spec.look.saturation * kMoonPurkinjeShift.clamp(0.0, 1.0))
+      : spec.look;
   var linear = synthesize(
     direct: direct,
     ambient: ambientRgb,
     width: width,
     height: height,
-    look: spec.look,
+    look: lookMoon,
     materialVariation: matVar,
     patchMask: patchMask,
   );
