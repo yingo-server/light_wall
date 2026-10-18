@@ -60,13 +60,14 @@ def room_rad(width=4.0, depth=5.0, height=2.9,
     out.append(poly("obs", "wallmat", [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)]))
 
     # 窗墙 (y1)：四周四块拼出窗洞
-    def seg(xa, xb, za, zb):
-        return poly("winwall", "wallmat",
+    # Radiance 要求标识符全局唯一 —— 每段墙必须单独命名
+    def seg(name, xa, xb, za, zb):
+        return poly(name, "wallmat",
                     [(xa, y1, za), (xb, y1, za), (xb, y1, zb), (xa, y1, zb)])
-    out.append(seg(x0, wx0, z0, z1))          # 左段
-    out.append(seg(wx1, x1, z0, z1))          # 右段
-    out.append(seg(wx0, wx1, z0, wz0))        # 窗下
-    out.append(seg(wx0, wx1, wz1, z1))        # 窗上
+    out.append(seg("winwall_l", x0, wx0, z0, z1))
+    out.append(seg("winwall_r", wx1, x1, z0, z1))
+    out.append(seg("winwall_b", wx0, wx1, z0, wz0))
+    out.append(seg("winwall_t", wx0, wx1, wz1, z1))
     return "".join(out), (wx0, wx1, wz0, wz1, y1)
 
 
