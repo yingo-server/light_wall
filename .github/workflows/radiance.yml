@@ -64,36 +64,6 @@ jobs:
       - name: 依赖（图片转换）
         run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
 
-      - name: 调试 view 语法
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import subprocess, os
-          from pyradiance.anci import BINPATH
-          os.makedirs("dbg", exist_ok=True)
-          # 最简场景：一个盒子
-          rad = "void plastic m\n0\n0\n5 .5 .5 .5 0 0\nm polygon p\n0\n0\n12\n-1 -1 0 1 -1 0 1 1 0 -1 1 0\n"
-          open("dbg/t.rad","w").write(rad)
-          oct_path = "dbg/t.oct"
-          r = subprocess.run([str(BINPATH/"oconv"), "dbg/t.rad"], capture_output=True)
-          open(oct_path,"wb").write(r.stdout)
-          vf = "dbg/v.vf"
-          open(vf,"w").write("rvp 0 0 1\nvd 0 0 -1\nvu 0 1 0\nvh 90\nvv 60\n")
-          variants = [
-            ["-vtv","-vp","0","0","1","-vd","0","0","-1","-vh","90","-vv","60"],
-            ["-vf",vf],
-            ["-vt","v","-vp","0","0","1","-vd","0","0","-1","-vh","90","-vv","60"],
-          ]
-          for i,v in enumerate(variants):
-              out = f"dbg/o{i}.hdr"
-              cmd = [str(BINPATH/"rpict")] + v + ["-x","64","-y","48","-ab","1", oct_path]
-              r = subprocess.run(cmd, capture_output=True)
-              print(f"变体{i} {v[:2]} rc={r.returncode} err={r.stderr.decode()[:200].strip()}")
-          print("rpict usage:")
-          u = subprocess.run([str(BINPATH/"rpict"),"-badopt"], capture_output=True)
-          print(u.stderr.decode()[:600])
-          PY
-
       - name: 全天采光渲染
         run: |
           python3 tools/radiance_gen.py \

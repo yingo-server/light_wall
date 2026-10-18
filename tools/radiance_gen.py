@@ -126,18 +126,15 @@ def build_scene(sky_bytes, room_txt, win_txt, tmpdir):
 
 def render_one(sky_bytes, octree, out_png, w, h, cam, exposure=0.0, nproc=8):
     """渲染单帧：rpict → pfilt → png。"""
-    # 用视图文件（-vf）—— 内联 view 选项在不同 Radiance 版本上有差异，
-    # 视图文件是官方推荐、格式稳定的写法。
-    vf = os.path.join(os.path.dirname(out_png) or ".", "view.vf")
-    with open(vf, "w", encoding="utf-8") as f:
-        f.write(
-            f"rvp {cam[0]:.3f} {cam[1]:.3f} {cam[2]:.3f}\n"
-            f"vd {cam[3]:.3f} {cam[4]:.3f} {cam[5]:.3f}\n"
-            "vu 0 0 1\n"
-            "vh 88\n"
-            "vv 52\n"
-        )
-    view = ["-vf", vf]
+    # 内联 view 选项（实测该构建接受 -vtv -vp …；必须给 -vu，且不能与
+    # -vd 平行，否则报 "view up parallel to view direction"）
+    view = [
+        "-vtv",
+        "-vp", f"{cam[0]:.3f}", f"{cam[1]:.3f}", f"{cam[2]:.3f}",
+        "-vd", f"{cam[3]:.3f}", f"{cam[4]:.3f}", f"{cam[5]:.3f}",
+        "-vu", "0", "0", "1",
+        "-vh", "88", "-vv", "52",
+    ]
     params = ["-ab", "4", "-ad", "2048", "-as", "512", "-ar", "128",
               "-aa", "0.08", "-lr", "6", "-lw", "0.002", "-n", str(nproc)]
     hdr = pr.rpict(view, octree, xres=w, yres=h, params=params)
