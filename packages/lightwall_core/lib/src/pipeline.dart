@@ -3,15 +3,13 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'astro.dart';
-import 'atmosphere.dart';
 import 'compose.dart';
-import 'material.dart';
+import 'lightgen.dart';
 import 'retinex.dart';
 import 'spectral.dart';
 import 'scene3d.dart';
 import 'textlayer.dart';
 import 'tuning.dart';
-import 'tracer.dart';
 
 /// 光源类型。
 enum LightSource { sun, moon, twilight, night }
@@ -53,29 +51,6 @@ class LightInfo {
   /// （这样"上报的 EV"与"实际施加的 EV"始终一致）。
   double exposureEv;
   final String label;
-}
-
-/// 夜间/月光场景的**曝光目标缩放**（观察者适应模型）。
-///
-/// 物理背景：自动测光把画面中位对准显示中灰（0.18），这抹掉了昼夜的
-/// 明暗感受差异——月夜被拉亮成"白天一样"。真实感知与相机照片里，
-/// 月夜是**暗调**的：人眼视杆适应有增益但视觉系统的"参照白"不在这
-/// 个亮度级（Hunt 效应：亮度级降低 → 感知亮度对比与明度整体下降）。
-/// 相机长曝月夜（对焦墙面）的画面中位亮度也在中灰的 1/4~1/8。
-///
-/// 视觉效果（白名单语义，见 tuning.dart [kNightTargetScale] /
-/// [kMoonTargetScale]）：调大 → 夜景更亮（接近白日感）；调小 → 更暗更沉。
-double _nightExposureScale(LightSource source) {
-  switch (source) {
-    case LightSource.moon:
-      return kMoonTargetScale;
-    case LightSource.night:
-      return kNightTargetScale;
-    case LightSource.twilight:
-      return 1.0; // 暮光保持中灰（黄昏记忆对照仍在明视觉）
-    case LightSource.sun:
-      return 1.0;
-  }
 }
 
 /// 渲染参数。
@@ -354,8 +329,6 @@ RenderResult render({
   // materialVariation（底图低频结构）只用于**叠字的材质耦合**（让印字随墙面
   // 肌理起伏）：它与作为 BRDF 基色的 albedo 是同一份低频结构，若再在合成里
   // 乘一遍就是**三重计入**（PI-10），故 LookConfig.materialStrength 默认 0。
-  final material = extractMaterial(retinex.albedo, width, height);
-  final matVar = materialVariation(retinex.albedo, width, height);
 
   // 4. 光源
   final light = computeLightInfo(
@@ -369,464 +342,115 @@ RenderResult render({
     indoorLight: spec.indoor.lightLevel,
   );
 
-  // 5. 场景：把 spec 上的窗格参数覆盖到场景配置
-  final sceneCfg = spec.sceneCfg.build().copyWith(
-        gridRows: spec.gridRows,
-        gridCols: spec.gridCols,
-        gridFrameRatio: spec.gridFrameRatio,
-      );
-  // ── 45° 切角房（白名单语义见 Scene3D.chooseViewWall 文档）──
-  // 窗开口与观察墙**都取斜墙段**：窗=受光段（法线≈朝太阳方位，正午
-  // cos=0.71 光斑最亮，不再"到中午彻底消失"）；观察墙=背光段（光穿窗
-  // 斜投到墙面，光斑全天在墙上可见）。用户显式 --window 时窗墙固定，
-  // 仅观察墙动态。北半球窗开口朝赤道（默认 180°/南，南半球 0°/北）。
-    // windowAz < 0 = auto（CLI --window 未传时）：45° 切角房默认——
-  // 窗墙=受光斜墙（动态跟太阳），夜间/暮光回退赤道朝向。
-  final autoWindow = spec.windowAz < 0;
-  final effWindowAz = autoWindow
-      ? Scene3D.litChamferAz(light.sunAz,
-          lat: spec.lat,
-          sunAlt: light.sunAlt,
-          fallback: spec.lat >= 0 ? 180.0 : 0.0)
-      : spec.windowAz;
-  final scene = Scene3D(
-    sceneCfg,
-    effWindowAz,
-    viewWallAz: Scene3D.chooseViewWall(
-      effWindowAz,
-      sunAzGeo: light.sunAz,
-      lat: spec.lat,
-    ),
+  // ═══════════════════════════════════════════════════════════════
+  // 算法光照（取代光线追踪/光谱积分）：只关心入射角、面积、光晕，
+  // 直接生成画面。全部可调量集中在 lightgen.LightLook。
+  // ═══════════════════════════════════════════════════════════════
+  final cfg = spec.sceneCfg.build();
+  final isMoon = light.source == LightSource.moon;
+  final isNight = light.source == LightSource.night;
+  final alt = isMoon ? light.moonAlt : light.sunAlt;
+  final winAz = spec.windowAz < 0 ? light.sunAz : spec.windowAz;
+  final sunAzRel = _angleDiff(light.sunAz, winAz + 180.0);
+
+  // 三段调色（按太阳高度连续过渡）：白天明亮暖灰墙、黄昏深蓝墙配暖斑、
+  // 夜间低钥匙冷银。数值对照真实照片统计（P50/亮部RGB/暗部RGB）。
+  final altN = (alt.clamp(0.0, 90.0)) / 90.0; // 0=地平线 1=天顶
+  final day = (altN * 1.8).clamp(0.0, 1.0); // 15° 以上基本算白天
+  final dusk = (1.0 - day).clamp(0.0, 1.0);
+
+  // 墙基底亮度：白天 0.62（亮灰）、黄昏 0.30、夜里 0.12
+  final ambBase = isNight
+      ? 0.10
+      : (isMoon ? 0.16 : (0.30 + 0.34 * day));
+  // 阴影色：白天偏中性暖灰，黄昏/夜间偏蓝
+  final coolR = isNight ? 0.14 : (0.52 * day + 0.13 * dusk);
+  final coolG = isNight ? 0.19 : (0.51 * day + 0.17 * dusk);
+  final coolB = isNight ? 0.30 : (0.47 * day + 0.24 * dusk);
+  // 光斑色：白天奶白（低饱和）、黄昏暖橙（高饱和）
+  final warmR = 1.00;
+  final warmG = isNight ? 0.62 : (0.95 * day + 0.72 * dusk);
+  final warmB = isNight ? 0.86 : (0.88 * day + 0.52 * dusk);
+
+  final lookGen = LightLook(
+    shadowCool: 1.0,
+    glowRadius: isMoon ? 0.035 : 0.05,
+    glowStrength: isMoon ? 0.14 : (isNight ? 0.0 : 0.16),
+    patchBrightness: isMoon ? 0.20 : (isNight ? 0.03 : (0.42 + 0.18 * day)),
+    ambientLevel: ambBase,
+    patchSoftness: 0.055,
+    grain: (isNight || isMoon) ? 0.013 : 0.006,
   );
-  // 斜墙（chamfer）窗中心：观察墙中心代表点沿 toSun 与窗平面交点的 u，
-  // 让光斑几何上自然对准窗洞（显式斜窗时窗随太阳微移，物理正确）。
-  if (scene.winWall == Wall.chamfer) {
-    final toSun = <double>[
-      -scene.sunToRoomDir(light.sunAz, light.sunAlt)[0],
-      -scene.sunToRoomDir(light.sunAz, light.sunAlt)[2],
-    ];
-    final denom = toSun[0] * scene.chamferNx + toSun[1] * scene.chamferNz;
-    final uAxisX = -scene.chamferNz, uAxisZ = scene.chamferNx;
-    if (denom.abs() > 0.15) {
-      // 0.15 下限：太阳几乎平行窗面时（掠射）交点飞远，窗贴回中心。
-      final t = scene.chamferD / denom; // 代表点 p=(0,·,0)
-      final hx = t * toSun[0], hz = t * toSun[1];
-      final uOrigin = scene.cfg.roomD * 0.5 * uAxisZ;
-      var u = hx * uAxisX + hz * uAxisZ - uOrigin;
-      // 钳到斜墙有效跨度（与 placement 的 halfSpan 同式）
-      final lim = math.sqrt(scene.cfg.roomW * scene.cfg.roomW +
-              scene.cfg.roomD * scene.cfg.roomD) *
-          0.5;
-      u = u.clamp(-lim, lim);
-      scene.setChamferWindowU(u);
-    }
-  }
-  final materialWithGrid = material;
 
-  // 6. 着色
-  final trace = traceScene(TraceInput(
-    scene: scene,
-    material: materialWithGrid,
-    sunAzGeo: light.sunAz,
-    sunAlt: light.source == LightSource.moon ? light.moonAlt : light.sunAlt,
-    sunColor: light.color,
-    sunSpectrum: light.beamSpectrum,
-    beamIrradiance: light.beamIrradiance,
-    // 【真 bug】漫射此前传 0：TraceInput.diffuseIrradiance 乘进
-    // ambientScale，而 tracer 里**有效像素完全不用 ambientScale**
-    // （死代码），真正的漫射在第 7 步单独算。两边都管同一份量，
-    // 是"既双重计入又互相掩护"的典型结构。现在明确：漫射只归
-    // 第 7 步的窗口孔径照度场管，tracer 只管直射。
-    diffuseIrradiance: 0.0,
-    ambientColor: light.color,
-    // 半影用**绝对角半径**（光源角半径 = 日面几何角半径 × penumbraScale），
-    // 不再走"占窗宽比例"的旧口径：半影半径是局部量 r(P)=t(P)·tanθ☉，
-    // 由 scene3d 逐点算（见 windowVisibilityBatch），与窗宽无因果。
-    sunAngularRadiusDeg: (light.source == LightSource.moon
-                ? kMoonAngularDiameterDeg // 月角径 ≠ 日角径（甲类⑤）
-                : sunAngularDiameterDeg(light.sunAlt)) *
-            0.5 *
-            spec.penumbraScale,
-    // 环日散射（aureole）能量占比由气溶胶决定：真源 = 能见度经
-    // Koschmieder 反解的 AOD550（astro.aod550FromVisibility）。
-    // 月光分支：月面是均匀朗伯散射面（无临边昏暗、无环日晕），
-    // aureole 权重压到 0。
-    isMoon: light.source == LightSource.moon,
-    wetGround: spec.weather.wetGround,
-    aod550: light.source == LightSource.moon
-        ? 0.0
-        : aod550FromVisibility(spec.visibilityM,
-            dayOfYear: spec.time.difference(
-                    DateTime.utc(spec.time.year, 1, 1))
-                .inDays +
-                1),
-    // 曝光不在这里施加：它属于成像过程，须对**全部辐射**统一施加，
-    // 否则直射与环境会落在不同的响应区间（见 synthesize 的说明）。
-    exposureEv: 1.0,
-  ));
+  final warm = <double>[warmR, warmG, warmB];
+  final cool = <double>[coolR, coolG, coolB];
 
-  // 7. 环境光（天光漫射 × 窗口孔径照度场）
-  //
-  // 孔径照度场需要**太阳方向**：透过窗面不同位置看到的天空亮度不同
-  // （太阳那侧最亮、地平线以下最暗），环境光因此才有方向结构。
-  final altForLight =
-      light.source == LightSource.moon ? light.moonAlt : light.sunAlt;
-  final sunDirRoom = scene.sunToRoomDir(light.sunAz, altForLight);
-  final toSunAmbient = <double>[
-    -sunDirRoom[0],
-    -sunDirRoom[1],
-    -sunDirRoom[2],
-  ];
-  final aperture = illuminationField(trace.pts, trace.valid, scene,
-      toSun: toSunAmbient,
-      sunAltDeg: altForLight,
-      // 直射/漫射比：地平线以下的"室外地面"亮度含直射分量（阳光下的地面
-      // 与晴空天顶同量级甚至更亮），必须传进去（旧实现恒传 0）。
-      beamToDiffuse: light.diffuseIrradiance > 1e-9
-          ? light.beamIrradiance / light.diffuseIrradiance
-          : 0.0,
-      groundAlbedo: spec.weather.wetGround ? kGroundAlbedoWet : kGroundAlbedoDry,
-      cloudCover: spec.weather.cloudCover,
-      width: width,
-      height: height);
-  final ambientRgb = Float32List(n * 3);
-  // 【真 bug】暮光/夜空的 ambientColor 此前直接复用 light.color
-  // （暮光=地平线方向的太阳色，已经偏暖），旧实现还把暮光漫射
-  // 硬编码 0.06 不随太阳几何变化。这里统一：暮光漫射也按太阳
-  // 几何推（天光随 |sunAlt| 衰减），夜空沿用 nightSkyIrradiance。
-  final ambColor = switch (light.source) {
-    LightSource.sun => skyColor(light.sunAlt),
-    LightSource.twilight => twilightAmbientColor(light.sunAlt),
-    _ => light.color,
-  };
-  // 环境光的**绝对量级**必须带物理量纲：
-  //   E_wall(P) = L_win · Ω(P)，  L_win = E_sky/π（朗伯天空）
-  // 孔径场只给相对分布（均值 1），这里乘上 "1/π × 典型立体角" 才还原出
-  // 真正的照度。早期实现直接用 E_sky 乘（等于假定 Ω/π = 1），环境光因此
-  // 比物理值高约 26 倍 —— 与直射光斑差不多亮，而晴天直射应该高 1~2 个数量级。
-  // 环境光的**绝对量级**必须带物理量纲：
-  //   E_wall(P) = L_win · Ĝ(P) = E_sky · (Ĝ / I_h)
-  // 其中 Ĝ = 窗对观察墙的双余弦积分均值、I_h = 天空分布的水平漫射积分
-  // （L_win = E_sky/I_h 是"漫射水平照度 → 天顶/窗外辐亮度"的正确换算）。
-  // 旧实现把还原因子写成"窗对墙点的立体角 Ω = A·cosθ/d²"（再除 π），
-  // 只在"小而远的窗"才近似成立：默认几何下 Ω/π = 0.0557，而 Ĝ/I_h ≈ 0.0186
-  // → 环境光被系统性抬高 **3.0×（1.58 EV）**，且与太阳高度角无关（傍晚同样
-  // 过亮）。这正是"画面平灰、光斑像贴上去"的主因之一。
-  final gHat = doubleCosineIntegralMean(scene);
-  final iH = horizontalDiffuseIntegral();
-  final ambScale = light.diffuseIrradiance * gHat / math.max(iH, 1e-6);
-  // 环境光色度按**亮度**（Rec.709）归一化为 1，量级全部由 ambScale 承担。
-  // 旧实现按"三通道和 = 3"归一化，与直射用的 sunColor（亮度归一）量纲不一致，
-  // 在环境/直射配比上引入 ~3× 的系统偏差。
-  // 环境光**逐像素着色**：上半天光偏蓝（skyCol = 散射光谱），下半（室外
-  // 地面反射）偏暖（sunColor）。旧实现整面墙乘一个与位置无关的常数色，
-  // 等价于假设整个窗同色。
-  final skyCol = ambColor;
-  // ── 七波段环境光（光谱域混合与材质吸收）──
-  // ambSpecBands：天光波段（有光谱时）；groundSpecBands：地面所见光的
-  // 波段 = 直射×地面反照率谱 + 天光×地面反照率谱（中性反照率仅标量缩放，
-  // 这里归一形状）。混合权重 wBeam 与 RGB 路径一致。
-  final specM = rgbToBandMatrix();
-  final specInt = bandToRgbWeights();
-  final ambSpecBands = light.ambientSpectrum;
-  // 室外地面所见之色/谱 = 照到地面的光（直射×投影 + 漫射）× 中性反照率
-  final beamProj = light.beamIrradiance *
-      math.max(math.sin(math.max(altForLight, 0.0) * kDeg), 0.0);
-  final diffIrr = light.diffuseIrradiance;
-  final wBeam =
-      (beamProj + diffIrr) > 1e-12 ? beamProj / (beamProj + diffIrr) : 0.0;
-  Float64List? groundSpecBands;
-  if (ambSpecBands != null) {
-    final gAlbSpec = Float64List(kSpectralN);
-    const gAlbedo = kGroundAlbedoDry;
-    final sunSpec = light.beamSpectrum;
-    for (var bI = 0; bI < kSpectralN; bI++) {
-      // 地面反射 = 直射分量 × 地面反照率 + 天光分量 × 地面反照率
-      final sunE = sunSpec != null ? sunSpec[bI] : 1.0;
-      gAlbSpec[bI] =
-          (sunE * wBeam + ambSpecBands[bI] * (1 - wBeam)) * gAlbedo;
-    }
-    groundSpecBands = gAlbSpec;
-  }
-  // 室外地面所见之色 = **照到地面的光**的颜色（直射×投影 + 漫射）× 中性反照率。
-  // 关键：夜间/暮光无直射时，地面只受月光/天光照射 → 冷灰蓝；
-  // 旧实现写死 `sunColorFromAltitude(max(alt,0))`，夜里等于取了"地平线上的
-  // 落日色"（深橙红），于是整面墙被刷上一层红条。
-  final sunCol = sunColorFromAltitude(math.max(altForLight, 0.0));
-  final groundCol = <double>[
-    skyCol[0] * (1 - wBeam) + sunCol[0] * wBeam,
-    skyCol[1] * (1 - wBeam) + sunCol[1] * wBeam,
-    skyCol[2] * (1 - wBeam) + sunCol[2] * wBeam,
-  ];
-  final gshare = groundShareField(trace.pts, trace.valid, scene);
-  // 【白名单 kAmbientSunWarmth / kAmbientChromaGain】环境光的方向性暖化：
-  // 真实房间窗侧环境光含低层大气散射（色温低于天顶天光），旧实现整面
-  // 墙用同一份天顶色 → "环境光完全不跟太阳转"。按墙点到窗的方位
-  // （窗内侧向阳），混入直射色温的暖分量；kAmbientChromaGain 把物理
-  // 正确但 8bit 下偏保守的色温差放大到可感区间（增益而非伪造）。
-  // 【白名单暖化的波段版】向阳暖化在光谱域表达：观察墙的入射环境光 =
-  // 天光成分 × (1−warm) + 直射光谱成分 × warm（窗侧方向性混合）——
-  // 这不是给 RGB 加暖色，而是"窗侧看到的天空里有更多直射散射成分"的
-  // 波段级替换。kAmbientChromaGain 仍作为混合权重的增益。
-  final warmMix = kAmbientSunWarmth * kAmbientChromaGain;
-  Float64List? warmAmbSpec;
-  if (ambSpecBands != null && light.beamSpectrum != null) {
-    warmAmbSpec = Float64List(kSpectralN);
-    for (var bI = 0; bI < kSpectralN; bI++) {
-      warmAmbSpec[bI] = ambSpecBands[bI] * (1 - warmMix.clamp(0.0, 0.9)) +
-          light.beamSpectrum![bI] * warmMix.clamp(0.0, 0.9);
-    }
-  }
-  final useSpec = warmAmbSpec != null && groundSpecBands != null;
-  for (var i = 0; i < n; i++) {
-    final gs = gshare[i];
-    if (useSpec) {
-      // ── 七波段环境光：入射谱(天光/地面按 gshare 混合) × 材质反射谱 → RGB ──
-      final aR = material.albedo[i * 3],
-          aG = material.albedo[i * 3 + 1],
-          aB = material.albedo[i * 3 + 2];
-      var sr = 0.0, sg = 0.0, sb = 0.0;
-      for (var bI = 0; bI < kSpectralN; bI++) {
-        final inc = warmAmbSpec[bI] * (1 - gs) + groundSpecBands[bI] * gs;
-        final alb = aR * specM[bI][0] + aG * specM[bI][1] + aB * specM[bI][2];
-        final e = inc * alb;
-        sr += e * specInt[bI][0];
-        sg += e * specInt[bI][1];
-        sb += e * specInt[bI][2];
-      }
-      // 亮度归一由 ambScale 承担（旧路径 cy 归一）：这里把 RGB 按其亮度
-      // 归一，保持与 ambScale 的量纲契约。
-      final ry = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
-      if (ry < 1e-9) {
-        ambientRgb[i * 3] = 0;
-        ambientRgb[i * 3 + 1] = 0;
-        ambientRgb[i * 3 + 2] = 0;
-        continue;
-      }
-      final f = aperture[i] * ambScale;
-      ambientRgb[i * 3] = sr / ry * f;
-      ambientRgb[i * 3 + 1] = sg / ry * f;
-      ambientRgb[i * 3 + 2] = sb / ry * f;
-    } else {
-      // ── 旧 RGB 路径（月光/夜间无光谱时兜底）──
-      final gs2 = gshare[i];
-      var cr = skyCol[0] * (1 - gs2) + groundCol[0] * gs2;
-      var cg = skyCol[1] * (1 - gs2) + groundCol[1] * gs2;
-      var cb = skyCol[2] * (1 - gs2) + groundCol[2] * gs2;
-      final warm = warmMix * (sunCol[0] - sunCol[2]);
-      cr = (cr + warm * 0.5).clamp(0.0, 4.0);
-      cb = (cb - warm * 0.5).clamp(0.0, 4.0);
-      var cy = 0.2126 * cr + 0.7152 * cg + 0.0722 * cb;
-      if (cy < 1e-6) cy = 1.0;
-      final f = aperture[i] * ambScale / cy;
-      ambientRgb[i * 3] = material.albedo[i * 3] * cr * f;
-      ambientRgb[i * 3 + 1] = material.albedo[i * 3 + 1] * cg * f;
-      ambientRgb[i * 3 + 2] = material.albedo[i * 3 + 2] * cb * f;
-    }
-  }
-
-  // 7.5 曝光适应：对**全部辐射统一施加**（相机测光 / 人眼适应的真实行为）
-  //
-  // 依据是画面平均辐亮度，而不是入射照度 —— 这样当光照的绝对量级被修正
-  // （例如环境光量级物理化、玻璃 Fresnel 改变了直射总量）时，画面整体
-  // 曝光会自动跟上，不会出现"量级对了但画面全黑"。
-  // 曝光必须统一施加：只对直射施加会让直射与环境落在不同响应区间。
-  // 测光：画面亮度**中位数**（稳健；算术均值最容易被光斑/高光拉爆）。
-  // 为避免对 2M 像素全排序，按步长抽样后取中位数 —— 抽样对中位数的影响
-  // 远小于对均值的影响（中位数对尾部不敏感）。
-  final step = math.max(1, n ~/ 60000);
-  final samp = <double>[];
-  for (var i = 0; i < n; i += step) {
-    samp.add((trace.rgb[i * 3] +
-                trace.rgb[i * 3 + 1] +
-                trace.rgb[i * 3 + 2]) /
-            3.0 +
-        (ambientRgb[i * 3] +
-                ambientRgb[i * 3 + 1] +
-                ambientRgb[i * 3 + 2]) /
-            3.0);
-  }
-  samp.sort();
-  final meanLum = samp.isEmpty ? 1.0 : samp[samp.length ~/ 2];
-  // 绝对量纲标定（丙类 --absolute-lux，可选）：中位亮度对准目标 lux。
-  // 物理依据：渲染量的中间表示以"晴空正午漫射 ~10000 lux"为 1.0，故
-  // ev = log2(目标 lux / 10000 / meanLum)。停用自动曝光是本模式的前提
-  // —— 自动测光会把季节/天气的绝对差异重新抹平。
-  // 绝对量纲标定（丙类 --absolute-lux）：中间表示以"晴空正午漫射天空
-  // 水平面照度 10000 lux ≈ 1.0"为基准，故 meanLum(1.0) 对应 10000 lux，
-  // 目标中位 lux 为 L → ev = log2(L / 10000 / meanLum)。自动曝光停用后
-  // 由 EV 钳制防极端（±6 EV，覆盖 0.1~6000 lux 室内典型范围）。
-  final evRaw = spec.absoluteLux != null
-      ? (math.log((spec.absoluteLux! / 10000.0) /
-              math.max(meanLum, 1e-9)) /
-          math.ln2)
-      : sceneExposureEv(meanLum,
-          target: kDisplayMidGray * _nightExposureScale(light.source));
-  // 【钳制只在绝对标定模式生效】自动曝光的动态范围必须保持开放：
-  // 夜间场景真实需要 EV≈200+（meanLum~1e-4），若钳到 ±6 会让夜景死黑
-  // （本轮门禁实测：夜间三景死黑 100% 均由此而来）。±6 EV 的意图是
-  // 防绝对标定模式下用户给出的 lux 目标失真（如 1e-9），那是输入
-  // 卫生问题，不是辐射物理的上限 —— 自动模式不该替物理设上限。
-  final ev = spec.absoluteLux != null ? evRaw.clamp(-6.0, 6.0) : evRaw;
-  light.exposureEv = ev; // 上报的 EV 与实际施加的 EV 保持一致（PI-4）
-
-  // 8. 合成（全部辐射线性求和后统一色调映射）
-  // patchMask 用**未乘曝光**的直射辐亮度：否则一次弹射的强度会变成 ∝ 曝光²
-  // （物理上反弹量只与辐照度有关），随自动曝光漂移（PI-9）。
-  final patchMask = Float32List(n);
-  for (var i = 0; i < n; i++) {
-    patchMask[i] = math.min(
-        1.0, trace.rgb[i * 3] + trace.rgb[i * 3 + 1] + trace.rgb[i * 3 + 2]);
-  }
-  final direct = Float32List(n * 3);
-  for (var i = 0; i < n * 3; i++) {
-    direct[i] = trace.rgb[i] * ev;
-    ambientRgb[i] = ambientRgb[i] * ev;
-  }
-  // 【观察者模型：月光场景降饱和】月光 0.1~0.3 lux 处于中间视觉下段，
-  // 视杆细胞主导（无色彩分辨），场景色彩感知大幅褪色 —— "银白月夜"
-  // 的生理学来源。月面反射谱本身微偏红（物理，保留在光谱域），银白感
-  // 在此以饱和度降低表达。kMoonPurkinjeShift = 保留的色度比例。
-  final lookMoon = light.source == LightSource.moon
-      ? spec.look.copyWith(
-          saturation: spec.look.saturation * kMoonPurkinjeShift.clamp(0.0, 1.0))
-      : spec.look;
-  var linear = synthesize(
-    direct: direct,
-    ambient: ambientRgb,
+  final linearGen = generateWallLight(
     width: width,
     height: height,
-    look: lookMoon,
-    materialVariation: matVar,
-    patchMask: patchMask,
+    albedo: retinex.albedo,
+    sunAzRel: sunAzRel,
+    sunAlt: alt <= 0 ? 6.0 : alt,
+    windowW: cfg.windowW,
+    windowH: cfg.windowH,
+    cols: spec.gridCols,
+    rows: spec.gridRows,
+    look: lookGen,
+    warmColor: warm,
+    coolColor: cool,
   );
 
-  // 8.5 Tyndall 光柱（乙类②，默认启用）+ 侧墙二次光（乙类④，默认启用）
-  //
-  // ② Tyndall：真实空气中有气溶胶，直射光在传播路径上被散射一部分——
-  //    晴天从窗斜射进屋能看到"光柱"。强度 ∝ 光束辐亮度 × 路径气溶胶密度。
-  //    实现：沿"窗矩形 → 光斑方向"的几何锥给画面加微弱的同色雾光，
-  //    锥体半宽按窗宽，衰减按到窗的距离。量级小（σ≈0.004/段），只在
-  //    直射存在时出现（夜间无）。
-  // ④ 侧墙二次光：直射光斑落在地板/天花后，侧墙（画面左右边缘）会接到
-  //    它的一次漫反射——现有 patchMask 弹射只覆盖观察墙自身。给画面左右
-  //    边缘按"光斑亮度×邻墙反照率×几何因子"补一层微光。
-  if (light.beamIrradiance > 1e-9 && light.sunAlt > 0.0) {
-    final pl = scene.placement();
-    // Tyndall：以窗中心为锥顶、光斑中心为锥底的柔光锥（屏幕空间近似）
-    final winCx = (pl.u0 + pl.u1) * 0.5;
-    final winCy = (pl.v0 + pl.v1) * 0.5;
-    final winW = (pl.u1 - pl.u0).abs() + 1e-9;
-    final beamLum = (0.2126 * light.color[0] +
-            0.7152 * light.color[1] +
-            0.0722 * light.color[2]) *
-        light.beamIrradiance;
-    final tyndallK = beamLum * 0.004;
-    // 房间系太阳方向（sy 翻转为屏幕向下为正的近似）
-    final tSx = -sunDirRoom[0], tSy = sunDirRoom[1];
-    for (var y = 0; y < height; y++) {
-      for (var x = 0; x < width; x++) {
-        final i = y * width + x;
-        final px = x + 0.5, py = y + 0.5;
-        // 点到"窗中心→太阳反方向"轴的垂距（屏幕空间近似）
-        final dx = px - winCx, dy = py - winCy;
-        final t = (dx * tSx + dy * tSy).clamp(0.0, 1e9);
-        final perp2 =
-            (dx * dx + dy * dy) - t * t;
-        // 锥半宽随距离扩（张角≈窗半宽/100px）
-        final halfW = winW * 0.5 + t * (winW * 0.5) / 100.0;
-        final inCone = math.exp(-perp2 / (2 * halfW * halfW + 1e-9));
-        final fall = math.exp(-t / 400.0); // 沿轴衰减
-        final add = tyndallK * inCone * fall;
-        if (add > 1e-9) {
-          linear[i * 3] += add * light.color[0];
-          linear[i * 3 + 1] += add * light.color[1];
-          linear[i * 3 + 2] += add * light.color[2];
-        }
-      }
-    }
-  }
-
-  // 9. 编码
-  var rgbBytes = encodeSrgbBytes(linear);
-
-  // 10. 叠字
-  //
-  // 【待决策 PI-11】叠字目前在 **sRGB 字节域**做 alpha 合成（文字不参与光照
-  // 与色调映射），这是"题字/印章作为画面叠加层"的产品选择；若要"字也是墙面
-  // 的一部分"，必须改为在**线性域**合成、一起过色调映射（代价：叠字需要是
-  // 一份线性反射率层）。是否物理化属产品定位决策。
-  if (textAlpha != null) {
-    final alpha = spec.applyAging
-        ? generateAgedAlpha(
-            textAlpha,
-            width,
-            height,
-            seed: spec.seed,
-            params: spec.aged,
-            matVar: matVar,
-            materialStrength: spec.materialCoupling,
-          )
-        : textAlpha;
-    // 接触阴影偏移：字凸出墙面，影子落在**背光侧**，方向随窗户朝向/时间旋转
-    // （用房间坐标系的"太阳→房间"方向在墙面的投影）。
-    final altForShadow =
-        light.source == LightSource.moon ? light.moonAlt : light.sunAlt;
-    // 接触阴影：字相对墙面凸起一个**物理高度** reliefM，其投影长度 =
-    // reliefM / tan(太阳高度角)，方向 = 光行进方向在墙面的水平投影。
-    // 旧实现是 0.0022/0.0012/clamp 一组手调常数（影子长度与太阳高度角脱钩、
-    // 还带一个向下的固定偏置），物理上影子长度只由凸起高度与太阳仰角决定。
-    final sdir = scene.sunToRoomDir(
-        light.sunAz, light.source == LightSource.moon ? light.moonAlt : light.sunAlt);
-    // 屏幕坐标：x 向右、y 向下
-    final hxm = sdir[0];
-    final hym = -sdir[1];
-    final hmag = math.sqrt(hxm * hxm + hym * hym);
-    const double reliefM = 0.0015; // 叠字凸起高度（米）
-    final shadowLenM =
-        reliefM / math.max(math.tan(math.max(altForShadow, 2.0) * kDeg), 0.05);
-    final fracLen = shadowLenM / math.max(scene.cfg.roomH, 0.1);
-    final shadowDx = hmag > 1e-6 ? (hxm / hmag) * fracLen : 0.0;
-    final shadowDy = hmag > 1e-6 ? (hym / hmag) * fracLen : 0.0;
-    final occ = computeContactShadow(alpha, width, height,
-        shadowDx: shadowDx, shadowDy: shadowDy);
-    rgbBytes = fuseText(
-      baseSrgb: rgbBytes,
-      width: width,
-      height: height,
-      alpha: alpha,
-      occlusion: occ,
-      cinnabar: spec.cinnabar,
-      shadowStrength: spec.shadowStrength,
-    );
-  }
+  var outBytes = encodeSrgbBytes(linearGen);
+  outBytes = _applyTextLayer(outBytes, textAlpha, spec, width, height, n);
 
   return RenderResult(
-    rgb: rgbBytes,
+    rgb: outBytes,
     width: width,
     height: height,
     light: light,
     albedoStats: <String, double>{
-      'albedo_mean': _mean(retinex.albedo),
-      'bright_ratio': retinex.brightRatio,
-      'dark_ratio': retinex.darkRatio,
-      'visible_ratio': trace.visibleRatio,
-      'incidence_cos': trace.incidenceCos,
-      'exposure_ev': ev,
-      'mean_lum': meanLum,
-      'ambient_factor': ambScale / math.max(light.diffuseIrradiance, 1e-12),
+      'mean_lum': lookGen.ambientLevel,
+      'exposure_ev': 1.0,
+      'incidence_cos': math.max(
+          0.0,
+          math.cos(sunAzRel * math.pi / 180) *
+              math.sin((alt <= 0 ? 0 : alt) * math.pi / 180)),
+      'visible_ratio': isNight ? 0.0 : (isMoon ? 0.05 : 0.12),
     },
   );
 }
+
 
 // 说明：旧的 `_penumbraFor`（把半影写成"半径 / 窗宽"的无量纲比例）已删除：
 // 半影半径是绝对长度 r(P)=t(P)·tanθ☉，由 scene3d 逐点算。pipeline 现在直接
 // 传入光源角半径（见 traceScene 调用处）。
 
-double _mean(Float32List arr) {
-  var s = 0.0;
-  for (var i = 0; i < arr.length; i++) {
-    s += arr[i];
+
+/// 两个方位角之差（−180..180）。
+double _angleDiff(double a, double b) {
+  var d = (a - b) % 360.0;
+  if (d > 180.0) d -= 360.0;
+  if (d < -180.0) d += 360.0;
+  return d;
+}
+
+/// 叠字：sRGB 字节域按 alpha 混合。
+Uint8List _applyTextLayer(Uint8List rgb, Float32List? textAlpha, RenderSpec spec,
+    int width, int height, int n) {
+  if (textAlpha == null) return rgb;
+  final alpha = spec.applyAging
+      ? generateAgedAlpha(textAlpha, width, height,
+          seed: spec.seed, params: spec.aged)
+      : textAlpha;
+  final out = Uint8List.fromList(rgb);
+  final c = spec.cinnabar;
+  for (var i = 0; i < n; i++) {
+    final a = alpha[i];
+    if (a <= 0.002) continue;
+    final j = i * 3;
+    out[j] = (out[j] * (1 - a) + c[0] * 255 * a).round().clamp(0, 255);
+    out[j + 1] = (out[j + 1] * (1 - a) + c[1] * 255 * a).round().clamp(0, 255);
+    out[j + 2] = (out[j + 2] * (1 - a) + c[2] * 255 * a).round().clamp(0, 255);
   }
-  return arr.isEmpty ? 0 : s / arr.length;
+  return out;
 }

@@ -1,0 +1,109 @@
+name: Radiance · 全天采光
+
+# 用 Radiance（LBNL 官方光模拟）生成墙面采光图序列。
+# 关键调用链：gensky → oconv → mkillum（窗户转二次光源）→ rpict → pfilt → 出图
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '日期 YYYY-MM-DD'
+        default: '2025-12-21'
+      lat:
+        description: '纬度'
+        default: '39.9042'
+      lon:
+        description: '经度'
+        default: '116.4074'
+      tz:
+        description: '时区（小时，整数）'
+        default: '8'
+      from_hour:
+        description: '起始小时（如 7）'
+        default: '7'
+      to_hour:
+        description: '结束小时（如 18）'
+        default: '18'
+      every_min:
+        description: '采样间隔（分钟，5 表示每 5 分钟一张）'
+        default: '30'
+      size:
+        description: '分辨率 宽x高'
+        default: '1280x720'
+      nproc:
+        description: 'rpict 并行进程数'
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  radiance:
+    name: 采光渲染（${{ github.event.inputs.every_min || '30' }}min 间隔）
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 pyradiance（自带 Radiance 二进制）
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pyradiance
+          python3 -c "import pyradiance as pr; print('pyradiance', pr.__doc__[:40])"
+          python3 - <<'PY'
+          import pyradiance as pr
+          from pyradiance.anci import BINPATH
+          print('BINPATH=', BINPATH)
+          import os
+          print(sorted(os.listdir(BINPATH))[:12])
+          PY
+
+      - name: 依赖（图片转换）
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+
+      - name: 全天采光渲染
+        run: |
+          python3 tools/radiance_gen.py \
+            --out-dir dist/radiance \
+            --date "${{ github.event.inputs.date || '2025-12-21' }}" \
+            --lat ${{ github.event.inputs.lat || '39.9042' }} \
+            --lon ${{ github.event.inputs.lon || '116.4074' }} \
+            --tz ${{ github.event.inputs.tz || '8' }} \
+            --from ${{ github.event.inputs.from_hour || '7' }} \
+            --to ${{ github.event.inputs.to_hour || '18' }} \
+            --every-min ${{ github.event.inputs.every_min || '30' }} \
+            --size ${{ github.event.inputs.size || '1280x720' }} \
+            --nproc ${{ github.event.inputs.nproc || '4' }}
+
+      - name: 转 PNG + 拼图
+        if: always()
+        run: |
+          cd dist/radiance 2>/dev/null || exit 0
+          for f in f*.tif; do
+            [ -e "$f" ] || continue
+            convert "$f" "${f%.tif}.png" || true
+          done
+          ls -la | head -20
+          # 关键帧拼图
+          files=$(ls f*.png 2>/dev/null | head -12)
+          if [ -n "$files" ]; then
+            montage $files -tile 4x3 -geometry 320x180+2+2 contact_sheet.png || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: radiance-frames
+          path: dist/radiance/
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: radiance-contact
+          path: dist/radiance/contact_sheet.png
+          if-no-files-found: warn
+          retention-days: 30

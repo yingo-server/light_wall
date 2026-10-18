@@ -55,6 +55,7 @@ class TraceInput {
     this.isMoon = false,
     this.wetGround = false,
     this.sunSpectrum,
+    this.visibilityOverride,
   });
 
   final Scene3D scene;
@@ -69,6 +70,10 @@ class TraceInput {
   /// 直射 7 波段光谱（亮度归一）。非 null 时直射着色走波段域：
   /// 材质逐波段吸收 → 乘积 → 积分 RGB（色温与材质显色都是算出来的）。
   final Float64List? sunSpectrum;
+
+  /// 直射可见性覆盖（解析投影遮罩，长度 = w*h，1=可见）。非 null 时
+  /// 替代逐点锥体采样——保证光斑是清晰的窗形网格而不是统计出来的糊团。
+  final Float32List? visibilityOverride;
 
   /// 【旧口径，只为向后兼容】半影采样半径 / 窗宽（无量纲）。
   ///
@@ -165,7 +170,8 @@ TraceOutput traceScene(TraceInput input) {
   // 角半径来自外部（[TraceInput.sunAngularRadiusDeg]，通常由 astro/大气模块
   // 给出）；若只有旧口径的 penumbra 比例，则按 pipeline `_penumbraFor` 的
   // 定义逆向换算，工作量级不变、距离依赖改为逐点正确。
-  final visible = scene.windowVisibilityBatch(pts, sunDir,
+  final visible = input.visibilityOverride ??
+      scene.windowVisibilityBatch(pts, sunDir,
       sunAngularRadiusDeg: input.sunAngularRadiusDeg ??
           _sunAngularRadiusFromLegacyPenumbra(input),
       aod550: input.aod550,

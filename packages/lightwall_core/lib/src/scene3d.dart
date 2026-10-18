@@ -15,6 +15,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'astro.dart';
+import 'tuning.dart';
 
 /// 窗户所在墙。
 enum Wall {
@@ -83,16 +84,16 @@ class SceneConfig {
   SceneConfig({
     this.roomW = 5.0,
     this.roomH = 3.0,
-    this.roomD = 4.5,
-    this.windowW = 1.2,
-    this.windowH = 1.5,
-    this.windowCy = 2.05,
-    this.windowCz = -0.9,
+    this.roomD = 4.0,
+    this.windowW = 1.4,
+    this.windowH = 1.6,
+    this.windowCy = 1.90,
+    this.windowCz = -0.3,
     this.gridRows = 3,
     this.gridCols = 2,
     this.gridFrameRatio = 0.10,
-    this.outerFrameWidthM = 0.050,
-    this.muntinWidthM = 0.025,
+    this.outerFrameWidthM = 0.070,
+    this.muntinWidthM = 0.045,
     this.cameraH = 1.25,
     this.cameraDist = 3.0,
     this.cameraFovDeg = 50.0,
@@ -495,6 +496,9 @@ class Scene3D {
   /// 同时修掉"外圈边框只有内框中挺一半厚"的倒置：窗洞四周用
   /// [SceneConfig.outerFrameWidthM]，相邻窗格之间每侧各缩 [SceneConfig.muntinWidthM]/2
   /// （合计正好一个中挺宽度），两者相互独立。
+  /// 调试：窗格矩形列表（供诊断/测试）。
+  Float64List glassPanesDebug() => _glassPanes(placement());
+
   Float64List _glassPanes(WindowPlacement pl) {
     final spanU = (pl.u1 - pl.u0).abs();
     final spanV = (pl.v1 - pl.v0).abs();
@@ -626,7 +630,12 @@ class Scene3D {
         : 0.05 + 0.19 * math.sqrt(aod / (aod + 0.05));
     // 临边昏暗系数 u：太阳 0.6（Allen），月球 0（朗伯散射面）
     final limbU = isMoon ? 0.0 : _kLimbDarkeningU;
-    const double aureoleHalfDeg = 2.0;
+    // 环日散射的角半宽（度）。**只影响光斑边缘的软带宽度**：
+    // 2° 在 4 m 距离相当于 14 cm 的模糊——把窗格彻底糊掉（实测）。
+    // 真实日晕是天空中的亮晕，其光同样被窗框遮挡，不会产生厘米级以上的
+    // 边缘模糊；取 0.35°（4 m 处 ~2.4 cm）与真实窗光的软边一致。
+    // 白名单：kAureoleHaloDeg。
+    final aureoleHalfDeg = kAureoleHaloDeg;
     final thetaDisk = diskDeg * kDeg;
     final thetaHalo = aureoleHalfDeg * kDeg;
     const int nHalo = 8;
@@ -877,7 +886,10 @@ class Scene3D {
     // 判定容差 1°（余量防浮点）；正交位仍走轴对齐墙（旧场景零变化）。
     final dEast = azDelta(canonical, 90.0);
     final dWest = azDelta(canonical, 270.0);
-    final dBack = azDelta(canonical, 180.0);
+    // 后墙外法线朝 +Z（规范方位角 0°）——窗在观察墙**对面**时正落在这里。
+    // 旧实现写成 180°，导致"窗正对观察墙"被判成斜墙（chamfer），而斜墙
+    // 平面距离只有 0.15 m（几乎贴相机）→ 光斑出画、糊成一片（实测）。
+    final dBack = azDelta(canonical, 0.0);
     final dMin = [dEast, dWest, dBack].reduce(math.min);
     if (dMin <= 1.0) {
       if (dEast <= 1.0) return Wall.east;
@@ -918,22 +930,13 @@ class Scene3D {
   ///
   /// [windowAz] 显式指定时按窗法线对称取斜墙（windowAz±135 中向阳侧）。
   static double chooseViewWall(double windowAz, {double? sunAzGeo, double? lat}) {
-    // 斜墙朝向（北半球：窗朝南 → 斜墙朝东南/西南；南半球镜像）
-    final sgn = (lat != null && lat < 0) ? -1.0 : 1.0;
-    final eq = sgn > 0 ? 180.0 : 0.0; // 窗开口朝向
-    final a1 = normAz(eq - 45.0 * sgn); // 东南（北半球）
-    final a2 = normAz(eq + 45.0 * sgn); // 西南（北半球）
-    if (sunAzGeo == null) {
-      // 无太阳信息：取与窗法线夹角较小的一段（构图稳定）
-      final w = normAz(windowAz);
-      return azDelta(a1, w) <= azDelta(a2, w) ? a1 : a2;
-    }
-    final s = normAz(sunAzGeo);
-    final d1 = azDelta(a1, s);
-    final d2 = azDelta(a2, s);
-    // 观察墙 = **背对太阳**的斜墙段（太阳照其室外侧，光穿窗投到墙面）。
-    if (d1 > 90.0 && d2 <= 90.0) return a1;
-    if (d2 > 90.0 && d1 <= 90.0) return a2;
-    return d1 >= d2 ? a1 : a2;
+    // 【窗正对观察墙】观察墙取窗的**对面墙**（内法线朝向窗户方向）。
+    // 物理：光穿窗后沿房间深度直接投在对面墙上——光斑从早到晚都存在，
+    // 只是随太阳方位左右平移、随高度角上下移动、形状从拉长的平行四边形
+    // （晨昏斜射）变为近方（正午高日）。这正是真实墙面照片的形态。
+    //
+    // 旧实现取"斜切侧墙"（±45°/+90°），只有当太阳方位恰好斜射时才看得到
+    // 光斑——实测 10:00-14:00 之外 vis=0（视频里"光不成型"的根因）。
+    return normAz(windowAz + 180.0);
   }
 }

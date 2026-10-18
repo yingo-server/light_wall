@@ -134,15 +134,15 @@ void main(List<String> argv) {
     gridRows: int.tryParse(args['grid-rows'] ?? '') ?? 3,
     gridCols: int.tryParse(args['grid-cols'] ?? '') ?? 2,
     gridFrameRatio: d('grid-frame') ?? 0.10,
-    windowW: d('window-w') ?? 1.2,
-    windowH: d('window-h') ?? 1.5,
-    windowCy: d('window-cy') ?? 2.05,
-    windowCz: d('window-cz') ?? -0.9,
+    windowW: d('window-w') ?? 1.4,
+    windowH: d('window-h') ?? 1.6,
+    windowCy: d('window-cy') ?? 1.90,
+    windowCz: d('window-cz') ?? -0.3,
     cameraH: d('camera-h') ?? 1.25,
     cameraDist: d('camera-dist') ?? 3.0,
     cameraFovDeg: d('fov') ?? 50.0,
     roomW: d('room-w') ?? 5.0,
-    roomD: d('room-d') ?? 4.5,
+    roomD: d('room-d') ?? 4.0,
   );
 
   final visibilityM = _req('visibility', 20000.0, '大气能见度，米');

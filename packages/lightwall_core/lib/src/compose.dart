@@ -22,6 +22,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'mathx.dart';
+import 'tuning.dart';
 
 /// 相机效果与画面参数。
 ///
@@ -320,6 +321,38 @@ Float32List synthesize({
 
   // 5. 统一色调映射：所有辐射共用同一条响应曲线（ACES RRT+ODT）
   toneMapInPlace(out, n);
+
+  // 5.5 胶片响应补足（成像层）：趾部抬升 + 肩部滚降 + 冷阴影。
+  //
+  // 这**不是**调色滤镜，是补上"负片/相机/人眼"这一段的响应：
+  //   · 趾部：暗部不压到 0（参考照片里暗部是可读的深灰蓝，而非死黑）
+  //   · 肩部：光斑不顶成死白（参考图光斑内仍看得见窗格与纹理）
+  //   · 冷阴影：阴影唯一光源是天光（~10000 K），直射是暖的 → 暖斑冷影
+  // 三者都有物理来源，量级由 tuning.dart 的白名单常数控制。
+  {
+    final lift = kFilmicShadowLift;
+    final roll = kHighlightRolloff;
+    for (var i = 0; i < n; i++) {
+      final j = i * 3;
+      final lum = 0.2126 * out[j] + 0.7152 * out[j + 1] + 0.0722 * out[j + 2];
+      // 趾部：把暗部整体抬起一个量（lum 越低抬得越多），保持端点 0 附近连续
+      final toe = lift * (1.0 - lum).clamp(0.0, 1.0);
+      // 肩部：**轻微**压缩（ACES 已做主要滚降，这里只补一点胶片肩部的
+      // 平缓感）。旧写法 roll·lum² 在 lum=1 处直接减 0.55，把光斑砍死在
+      // 194/255（实测），光斑永远亮不起来。
+      final shoulder = roll * 0.2 * (lum * lum * lum);
+      final adj = toe - shoulder;
+      out[j] = (out[j] + adj).clamp(0.0, 1.0);
+      out[j + 1] = (out[j + 1] + adj).clamp(0.0, 1.0);
+      out[j + 2] = (out[j + 2] + adj).clamp(0.0, 1.0);
+      // 冷阴影：暗部向蓝偏移（天光照亮的阴影），高光保持暖
+      final wgt = (1.0 - lum).clamp(0.0, 1.0) * kShadowCoolShift;
+      if (wgt > 0) {
+        out[j] = (out[j] - wgt * 0.05).clamp(0.0, 1.0);
+        out[j + 2] = (out[j + 2] + wgt * 0.07).clamp(0.0, 1.0);
+      }
+    }
+  }
 
   // 6. 暗部偏色（显示域、无物理依据，默认关闭）—— CO-3
   if (look.shadowBlueTint > 0) {
