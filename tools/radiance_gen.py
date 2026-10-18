@@ -46,9 +46,9 @@ def room_rad(width=4.0, depth=5.0, height=2.9,
         return f'{mat} polygon {name}\n0\n0\n{len(pts) * 3}\n{p}\n'
 
     out = []
-    out.append("void plastic wallmat\n0\n0\n5 0.72 0.70 0.66\n")   # 墙：暖白
-    out.append("void plastic floormat\n0\n0\n5 0.30 0.28 0.26\n")  # 地
-    out.append("void plastic ceilmat\n0\n0\n5 0.80 0.80 0.78\n")   # 顶
+    out.append("void plastic wallmat\n0\n0\n5 0.72 0.70 0.66 0.02 0.05\n")   # 墙：暖白
+    out.append("void plastic floormat\n0\n0\n5 0.30 0.28 0.26 0.02 0.05\n")  # 地
+    out.append("void plastic ceilmat\n0\n0\n5 0.80 0.80 0.78 0.02 0.05\n")   # 顶
 
     # 地板 / 天花
     out.append(poly("floor", "floormat", [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)]))
@@ -179,7 +179,7 @@ def main():
         out_png = os.path.join(args.out_dir, f"f{idx:04d}.png")
         # gensky：晴天带太阳（-ang 用高度/方位由 pyradiance 从经纬度算）
         sky = pr.gensky(dt=tm, latitude=args.lat, longitude=args.lon,
-                        timezone=args.tz, sunny_with_sun=True)
+                        timezone=int(args.tz * 15), sunny_with_sun=True)
         octree = build_scene(sky, room_txt, win_txt, tmp)
         try:
             render_one(sky, octree, out_png, w, h, cam, nproc=args.nproc)
