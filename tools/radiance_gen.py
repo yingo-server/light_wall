@@ -138,10 +138,26 @@ def render_one(sky_bytes, octree, out_png, w, h, cam, exposure=0.0, nproc=8):
     # 注意：该构建的 rpict 不接受 -n（并行）——并行改由外部多进程/分块完成
     params = ["-ab", "4", "-ad", "2048", "-as", "512", "-ar", "128",
               "-aa", "0.08", "-lr", "6", "-lw", "0.002"]
-    hdr = pr.rpict(view, octree, xres=w, yres=h, params=params)
-    hdr = pr.pfilt(hdr, xres=str(w), yres=str(h), exposure=exposure)
-    tiff = pr.ra_tiff(hdr, out=out_png.replace(".png", ".tif"), lzw=True)
-    return tiff
+    import subprocess
+    from pyradiance.anci import BINPATH
+    # 分步执行并保留原生 stderr，便于定位是哪一步失败
+    def _run(name, args, stdin=None):
+        r = subprocess.run(args, input=stdin, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"{name} 失败 rc={r.returncode}: "
+                f"{r.stderr.decode(errors='replace')[:400]}")
+        print(f"    {name}: {len(r.stdout)} bytes", flush=True)
+        return r.stdout
+
+    hdr = _run("rpict", [str(BINPATH / "rpict")] + view +
+               ["-x", str(w), "-y", str(h)] + params + [str(octree)])
+    hdr2 = _run("pfilt", [str(BINPATH / "pfilt"), "-1", "-x", str(w),
+                          "-y", str(h), "-e", str(exposure), "-"],
+                stdin=hdr)
+    tif = out_png.replace(".png", ".tif")
+    _run("ra_tiff", [str(BINPATH / "ra_tiff"), "-l", "-", tif], stdin=hdr2)
+    return tif
 
 
 def main():
