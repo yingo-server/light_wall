@@ -264,6 +264,7 @@ jobs:
       - name: 定位最新 Release 并追加
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)"
           echo "最新 Release: $TAG"
